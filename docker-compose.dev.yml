@@ -1,0 +1,102 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: enmask_meta
+    volumes:
+      - postgres_dev:/var/lib/postgresql/data
+
+  mongodb:
+    image: mongo:6
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_dev:/data/db
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+      - "5678:5678"
+    depends_on:
+      - postgres
+      - mongodb
+      - redis
+    environment:
+      REPOSITORY_BACKEND: memory
+      API_V1_STR: /api/v1
+      SECRET_KEY: devsecret
+      BACKEND_CORS_ORIGINS: "http://localhost:5173,http://localhost:3000"
+      POSTGRES_META_DSN: postgresql+asyncpg://postgres:postgres@postgres:5432/enmask_meta
+      MONGODB_META_URI: mongodb://mongodb:27017
+      METADATA_DATABASE: enmask_meta
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/workers:/app/workers
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    environment:
+      VITE_BACKEND_PROXY_URL: http://backend:8000
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    depends_on:
+      - redis
+      - postgres
+    environment:
+      REPOSITORY_BACKEND: memory
+      POSTGRES_META_DSN: postgresql+asyncpg://postgres:postgres@postgres:5432/enmask_meta
+      MONGODB_META_URI: mongodb://mongodb:27017
+      METADATA_DATABASE: enmask_meta
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      SECRET_KEY: devsecret
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/workers:/app/workers
+    command: ["celery", "-A", "workers.celery_app", "worker", "--loglevel=debug", "--concurrency=2"]
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    depends_on:
+      - redis
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    volumes:
+      - ./backend/workers:/app/workers
+    command: ["celery", "-A", "workers.celery_app", "beat", "--loglevel=debug"]
+
+volumes:
+  postgres_dev:
+  mongo_dev:
