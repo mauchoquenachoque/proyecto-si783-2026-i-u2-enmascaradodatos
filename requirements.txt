@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+psycopg2-binary
+pymysql
+pymssql
+pymongo
+redis
+neo4j
+cryptography
+python-multipart
+faker
+passlib[bcrypt]
+bcrypt==4.0.1
+httpx
+python-dotenv

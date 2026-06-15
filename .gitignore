@@ -1,0 +1,30 @@
+# Entorno y secretos
+.env
+.keyfile
+
+# Datos persistentes locales
+*.db
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Logs y temporales
+*.log
+*.tmp
+*.bak
+
+# IDEs
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
