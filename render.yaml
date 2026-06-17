@@ -1,5 +1,4 @@
 # SecOps Universal — Blueprint para Render
-# Guia: RENDER-DEPLOY.md
 
 services:
   - type: web
@@ -11,8 +10,6 @@ services:
     dockerCommand: render-start.sh
     healthCheckPath: /health
     envVars:
-      - key: UVICORN_APP
-        value: main:app
       - key: DATA_DIR
         value: /app/data
       - key: SECRET_KEY
@@ -23,7 +20,3 @@ services:
         value: "Admin1234!"
       - key: ADMIN_NAME
         value: Administrador SecOps
-      - key: MASKING_SERVICE_URL
-        value: http://localhost:8001
-      - key: MONITOR_SERVICE_URL
-        value: http://localhost:8002
