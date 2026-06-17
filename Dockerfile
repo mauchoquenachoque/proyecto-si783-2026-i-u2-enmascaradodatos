@@ -10,14 +10,18 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     freetds-common \
+    dos2unix \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-RUN mkdir -p /app/data && chmod +x scripts/render-start.sh
+
+RUN mkdir -p /app/data \
+    && dos2unix scripts/render-start.sh \
+    && chmod +x scripts/render-start.sh
 
 EXPOSE 10000
 
-CMD ["scripts/render-start.sh"]
+CMD ["bash", "scripts/render-start.sh"]
