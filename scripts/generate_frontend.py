@@ -1,4 +1,12 @@
-<!DOCTYPE html>
+import os
+import re
+
+INDEX_PATH = "static/index.html"
+
+# We will read the original file to keep its JS functions if needed,
+# but we will replace the whole HTML body.
+
+NEW_HTML = """<!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
@@ -202,15 +210,15 @@
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div class="glass p-6">
                 <h3 class="text-sm font-semibold text-slate-300 mb-4">CPU Histórico</h3>
-                <canvas id="chart-cpu" height="200"></canvas>
+                <div class="relative h-40 w-full"><canvas id="chart-cpu"></canvas></div>
             </div>
             <div class="glass p-6">
                 <h3 class="text-sm font-semibold text-slate-300 mb-4">RAM Histórica</h3>
-                <canvas id="chart-ram" height="200"></canvas>
+                <div class="relative h-40 w-full"><canvas id="chart-ram"></canvas></div>
             </div>
             <div class="glass p-6">
                 <h3 class="text-sm font-semibold text-slate-300 mb-4">Disco Histórico</h3>
-                <canvas id="chart-disk" height="200"></canvas>
+                <div class="relative h-40 w-full"><canvas id="chart-disk"></canvas></div>
             </div>
         </div>
     </section>
@@ -285,7 +293,7 @@
             </div>
             <div class="glass p-6">
                 <h3 class="text-sm font-semibold text-slate-300 mb-4">Gráfico de Overhead</h3>
-                <canvas id="chart-overhead" height="250"></canvas>
+                <div class="relative h-48 w-full"><canvas id="chart-overhead"></canvas></div>
             </div>
         </div>
     </section>
@@ -733,3 +741,9 @@
 </script>
 </body>
 </html>
+"""
+
+with open(INDEX_PATH, "w", encoding="utf-8") as f:
+    f.write(NEW_HTML)
+
+print("index.html generated successfully.")

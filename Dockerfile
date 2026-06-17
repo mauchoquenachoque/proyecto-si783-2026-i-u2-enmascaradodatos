@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Librerías runtime necesarias para drivers de BD
+# Librerias runtime (sin build-essential — evita OOM en Render free)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     freetds-common \
@@ -19,11 +19,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 RUN mkdir -p /app/data
 
-# Script de arranque para Render
 COPY scripts/render-start.sh /usr/local/bin/render-start.sh
 RUN chmod +x /usr/local/bin/render-start.sh
 
-# Puerto que Render asigna dinámicamente via $PORT
 EXPOSE 10000
 
 CMD ["render-start.sh"]

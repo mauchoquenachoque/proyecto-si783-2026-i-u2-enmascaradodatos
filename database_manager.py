@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Union
+from typing import List, Dict, Any, Union, Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import pymysql
@@ -191,12 +191,26 @@ class MongoDB(BaseDeDatos):
 
 class RedisDB(BaseDeDatos):
     def conectar(self):
+        db_val = self.credenciales.get('database', 0)
+        try:
+            db_num = int(db_val)
+        except (ValueError, TypeError):
+            db_num = 0
+        
+        host = self.credenciales.get('host', 'localhost')
+        port = int(self.credenciales.get('port', 6379))
+        password = self.credenciales.get('password') or None
+        
+        ssl_ports = [6380, 18812, 18813]
+        use_ssl = self.credenciales.get('ssl', False) or port in ssl_ports
+        
         return redis.Redis(
-            host=self.credenciales.get('host'),
-            port=int(self.credenciales.get('port', 6379)),
-            db=int(self.credenciales.get('database', 0)),
-            password=self.credenciales.get('password') or None,
-            decode_responses=True
+            host=host,
+            port=port,
+            db=db_num,
+            password=password,
+            decode_responses=True,
+            ssl=use_ssl
         )
 
     def obtener_esquema(self) -> Dict[str, List[str]]:
@@ -281,3 +295,143 @@ class DatabaseFactory:
         clase = motores.get(motor.lower())
         if not clase: raise ValueError(f"Motor '{motor}' no soportado.")
         return clase(credenciales)
+
+
+def _es_motor_sql(motor: BaseDeDatos) -> bool:
+    return isinstance(motor, (PostgresDB, MySQLDB, SQLiteDB, SQLServerDB))
+
+
+def _quote_identifier_sql(motor: BaseDeDatos, nombre: str) -> str:
+    if isinstance(motor, SQLServerDB):
+        return f"[{nombre}]"
+    return f'"{nombre}"'
+
+
+def obtener_filas_tabla(motor: BaseDeDatos, tabla: str, limite: int = 100) -> List[Dict[str, Any]]:
+    if isinstance(motor, MongoDB):
+        return motor.ejecutar_consulta({}, coleccion=tabla, limit=limite)
+    if isinstance(motor, RedisDB):
+        return motor.ejecutar_consulta(tabla)
+    if isinstance(motor, Neo4jDB):
+        consulta = f"MATCH (n:{tabla}) RETURN n LIMIT {limite}"
+        return motor.ejecutar_consulta(consulta)
+
+    if isinstance(motor, SQLiteDB):
+        return motor.ejecutar_consulta(f'SELECT * FROM "{tabla}" LIMIT {limite}')
+    if isinstance(motor, SQLServerDB):
+        return motor.ejecutar_consulta(f"SELECT TOP {limite} * FROM {_quote_identifier_sql(motor, tabla)}")
+    return motor.ejecutar_consulta(f'SELECT * FROM {_quote_identifier_sql(motor, tabla)} LIMIT {limite}')
+
+
+def obtener_valor_ejemplo(motor: BaseDeDatos, tabla: str, columna: str) -> Optional[Any]:
+    filas = obtener_filas_tabla(motor, tabla, limite=25)
+    for fila in filas:
+        if columna in fila and fila[columna] is not None:
+            return fila[columna]
+    return None
+
+
+def transformar_columna_tabla(
+    motor: BaseDeDatos,
+    tabla: str,
+    columna: str,
+    transformador,
+    limite: int = 1000,
+) -> int:
+    filas = obtener_filas_tabla(motor, tabla, limite=limite)
+    if not filas:
+        return 0
+
+    actualizados = 0
+
+    if isinstance(motor, MongoDB):
+        cliente = motor.conectar()
+        try:
+            db_name = motor.credenciales.get('database')
+            col = cliente[db_name][tabla]
+            valores_vistos = set()
+            for fila in filas:
+                valor_actual = fila.get(columna)
+                valor_key = repr(valor_actual)
+                if valor_actual is None or valor_key in valores_vistos:
+                    continue
+                valores_vistos.add(valor_key)
+                nuevo_valor = transformador(valor_actual)
+                if nuevo_valor == valor_actual:
+                    continue
+                resultado = col.update_many({columna: valor_actual}, {"$set": {columna: nuevo_valor}})
+                actualizados += int(resultado.modified_count or 0)
+        finally:
+            cliente.close()
+        return actualizados
+
+    if isinstance(motor, RedisDB):
+        cliente = motor.conectar()
+        try:
+            valor_actual = cliente.get(tabla)
+            if valor_actual is None:
+                valor_actual = cliente.hgetall(tabla)
+                if isinstance(valor_actual, dict) and columna in valor_actual:
+                    nuevo_valor = transformador(valor_actual[columna])
+                    if nuevo_valor != valor_actual[columna]:
+                        cliente.hset(tabla, columna, nuevo_valor)
+                        return 1
+                return 0
+
+            nuevo_valor = transformador(valor_actual)
+            if nuevo_valor != valor_actual:
+                cliente.set(tabla, nuevo_valor)
+                return 1
+            return 0
+        finally:
+            cliente.close()
+
+    if isinstance(motor, Neo4jDB):
+        driver = motor.conectar()
+        try:
+            with driver.session() as session:
+                query = f"MATCH (n:{tabla}) WHERE n.{columna} IS NOT NULL RETURN DISTINCT n.{columna} AS valor LIMIT {limite}"
+                valores = [registro.get("valor") for registro in session.run(query)]
+                for valor_actual in valores:
+                    nuevo_valor = transformador(valor_actual)
+                    if nuevo_valor == valor_actual:
+                        continue
+                    session.run(
+                        f"MATCH (n:{tabla}) WHERE n.{columna} = $valor_actual SET n.{columna} = $nuevo_valor",
+                        valor_actual=valor_actual,
+                        nuevo_valor=nuevo_valor,
+                    )
+                    actualizados += 1
+        finally:
+            driver.close()
+        return actualizados
+
+    conn = motor.conectar()
+    try:
+        cursor = conn.cursor()
+        if isinstance(motor, SQLiteDB):
+            placeholder = "?"
+        else:
+            placeholder = "%s"
+
+        valores_vistos = set()
+        tabla_sql = _quote_identifier_sql(motor, tabla)
+        columna_sql = _quote_identifier_sql(motor, columna)
+        for fila in filas:
+            valor_actual = fila.get(columna)
+            valor_key = repr(valor_actual)
+            if valor_actual is None or valor_key in valores_vistos:
+                continue
+            valores_vistos.add(valor_key)
+            nuevo_valor = transformador(valor_actual)
+            if nuevo_valor == valor_actual:
+                continue
+            cursor.execute(
+                f"UPDATE {tabla_sql} SET {columna_sql} = {placeholder} WHERE {columna_sql} = {placeholder}",
+                (nuevo_valor, valor_actual),
+            )
+            actualizados += max(int(getattr(cursor, "rowcount", 0) or 0), 0)
+        conn.commit()
+        return actualizados
+    finally:
+        conn.close()

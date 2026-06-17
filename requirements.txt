@@ -14,3 +14,6 @@ passlib[bcrypt]
 bcrypt==4.0.1
 httpx
 python-dotenv
+authlib
+httpx[http2]
+psutil

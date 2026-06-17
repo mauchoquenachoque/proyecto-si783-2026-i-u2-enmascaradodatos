@@ -1,8 +1,6 @@
 """
-main.py — SecOps Universal Monitor API v6.0
-Autenticación: email + bcrypt (local) + Google OAuth 2.0
-Sesiones persistidas en SQLite (sobrevive reinicios).
-Health check completo de bases de datos.
+main.py — SecOps Universal Monitor API v5.0
+Autenticación: email + bcrypt (local) + Google OAuth2.
 """
 
 import os
@@ -12,49 +10,83 @@ from typing import Any, Dict
 import httpx
 from dotenv import load_dotenv
 from fastapi import Body, Depends, FastAPI, Form, HTTPException, Request, status
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
 
-from auth import (agregar_conexion, crear_token_sesion,
+from auth import (SESIONES_ACTIVAS, agregar_conexion, crear_token_sesion,
                   eliminar_conexion, obtener_conexion, obtener_sesion_actual,
-                  revocar_token, limpiar_sesiones_expiradas, obtener_estadisticas_sesiones)
+                  revocar_token)
 from config import settings
 from database_manager import DatabaseFactory
-from db_usuarios import (autenticar_usuario, init_db, registrar_usuario,
-                         buscar_usuario_por_correo)
-import google_oauth
-from health_monitor import (ejecutar_health_check_completo,
-                           obtener_historial_health, obtener_estadisticas_salud)
+from db_usuarios import (autenticar_usuario, init_db, registrar_usuario)
+from oauth_google import oauth, get_google_user_info
 
 load_dotenv()
+API_SERVICE_URL = os.getenv("API_SERVICE_URL", "http://localhost:8000")
 MASKING_SERVICE_URL = os.getenv("MASKING_SERVICE_URL", "http://localhost:8001")
 MONITOR_SERVICE_URL = os.getenv("MONITOR_SERVICE_URL", "http://localhost:8002")
-MOTORES_SDM_DISPONIBLES = ["sqlite", "postgres", "sqlserver", "mongodb", "redis", "neo4j"]
+MOTORES_SDM_DISPONIBLES = ["sqlite", "postgres", "sqlserver", "mongodb"]
+# Render sirve HTTPS; las cookies deben marcarse secure en produccion
 _COOKIE_SECURE = os.getenv("RENDER") == "true"
+
+
+async def _call_masking_service(path: str, payload: Dict[str, Any], method: str = "POST", timeout: float = 10.0):
+    async with httpx.AsyncClient() as client:
+        response = await client.request(method, f"{MASKING_SERVICE_URL}{path}", json=payload, timeout=timeout)
+        if response.status_code >= 400:
+            detail_msg = response.json().get("detail", response.text) if response.headers.get("content-type") == "application/json" else response.text
+            raise HTTPException(status_code=response.status_code, detail=detail_msg)
+        return response.json()
+
+
+async def _probe_service(name: str, url: str) -> Dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            response = await client.get(url.rstrip("/") + "/health")
+            response.raise_for_status()
+        status_value = "UP"
+        error = None
+    except Exception as exc:
+        status_value = "DOWN"
+        error = str(exc)
+    result = {
+        "service": name,
+        "status": status_value,
+        "response_time_ms": round((time.perf_counter() - started) * 1000, 3),
+    }
+    if error:
+        result["error"] = error
+    return result
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(
     title=settings.APP_NAME,
-    description="SecOps Universal Monitor — Multi-Auth + Multi-DB + Health Check",
-    version="6.0.0",
+    description="SecOps Universal Monitor — Autenticación Real + Multi-DB",
+    version="5.0.0",
 )
 
-# CORS para desarrollo local
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:8000", "http://127.0.0.1:8000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Middleware de sesión para OAuth2
+app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET_KEY", os.urandom(32).hex()))
 
 os.makedirs("static", exist_ok=True)
 
 
 @app.get("/health", tags=["Health"])
 async def health():
-    return {"status": "ok", "service": "api", "version": "6.0.0"}
+    masking_status = await _probe_service("masking_service", MASKING_SERVICE_URL)
+    monitor_status = await _probe_service("monitor_service", MONITOR_SERVICE_URL)
+    return {
+        "api": "UP",
+        "masking_service": masking_status.get("status", "DOWN"),
+        "monitor_service": monitor_status.get("status", "DOWN"),
+        "details": {
+            "api": {"status": "UP"},
+            "masking_service": masking_status,
+            "monitor_service": monitor_status,
+        },
+    }
 
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -62,12 +94,11 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.on_event("startup")
 async def startup_event():
-    """Inicializa la BD de usuarios y limpia sesiones expiradas."""
+    """Inicializa la BD de usuarios sin bloquear el health check de Render."""
     try:
         init_db()
-        limpiar_sesiones_expiradas(dias=30)
     except Exception as exc:
-        print(f"[STARTUP] init_db error: {exc}")
+        print(f"[STARTUP] init_db error (la app sigue arrancando): {exc}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -82,13 +113,8 @@ async def serve_login():
 @app.get("/")
 async def serve_dashboard(request: Request):
     token = request.cookies.get("session_token")
-    if not token:
+    if not token or token not in SESIONES_ACTIVAS:
         return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-    # Verificar que la sesión exista (puede estar en SQLite después de reinicio)
-    try:
-        sesion = obtener_sesion_actual(request)
-    except HTTPException:
-        return RedirectResponse(url="/login?error=Sesión+expirada", status_code=status.HTTP_302_FOUND)
     return FileResponse("static/index.html")
 
 
@@ -98,6 +124,10 @@ async def serve_dashboard(request: Request):
 
 @app.post("/api/auth/register", tags=["Auth"])
 async def register(payload: Dict[str, Any] = Body(...)):
+    """
+    Registra un nuevo usuario con email + contraseña.
+    Body: { nombre, correo, password }
+    """
     nombre   = (payload.get("nombre") or "").strip()
     correo   = (payload.get("correo") or "").strip().lower()
     password = payload.get("password") or ""
@@ -112,13 +142,10 @@ async def register(payload: Dict[str, Any] = Body(...)):
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
+    # Auto-login tras registro exitoso
     token = crear_token_sesion(usuario["nombre"], usuario["correo"], "local")
     response = JSONResponse({"message": "Cuenta creada exitosamente.", "nombre": usuario["nombre"]})
-    response.set_cookie(
-        key="session_token", value=token,
-        httponly=True, samesite="lax", secure=_COOKIE_SECURE,
-        max_age=30 * 24 * 3600  # 30 días
-    )
+    response.set_cookie(key="session_token", value=token, httponly=True, samesite="lax", secure=_COOKIE_SECURE)
     return response
 
 
@@ -128,17 +155,9 @@ async def login(correo: str = Form(...), password: str = Form(...)):
     if not usuario:
         raise HTTPException(status_code=401, detail="Correo o contraseña incorrectos.")
 
-    token = crear_token_sesion(
-        usuario["nombre_completo"],
-        usuario["correo"],
-        usuario.get("proveedor", "local")
-    )
+    token = crear_token_sesion(usuario["nombre_completo"], usuario["correo"], usuario.get("proveedor","local"))
     response = JSONResponse({"message": "Login exitoso.", "nombre": usuario["nombre_completo"]})
-    response.set_cookie(
-        key="session_token", value=token,
-        httponly=True, samesite="lax", secure=_COOKIE_SECURE,
-        max_age=30 * 24 * 3600
-    )
+    response.set_cookie(key="session_token", value=token, httponly=True, samesite="lax", secure=_COOKIE_SECURE)
     return response
 
 
@@ -152,114 +171,63 @@ async def logout(request: Request):
     return response
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTH — GOOGLE OAUTH2
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/auth/google/login", tags=["Auth"])
+async def google_login(request: Request):
+    """Redirige al usuario a Google para autenticación."""
+    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/google/callback")
+    return await oauth.google.authorize_redirect(request, redirect_uri)
+
+
+@app.get("/auth/google/callback", tags=["Auth"])
+async def google_callback(request: Request):
+    """Callback de Google después de la autenticación."""
+    try:
+        token = await oauth.google.authorize_access_token(request)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error en autenticación Google: {str(e)}")
+    
+    user_info = token.get('userinfo')
+    if not user_info:
+        raise HTTPException(status_code=400, detail="No se pudo obtener información del usuario de Google.")
+    
+    nombre = user_info.get('name', 'Usuario Google')
+    correo = user_info.get('email', '')
+    
+    if not correo:
+        raise HTTPException(status_code=400, detail="No se pudo obtener el correo de Google.")
+    
+    # Registrar usuario si no existe (auto-registro con Google)
+    try:
+        registrar_usuario(nombre, correo, os.urandom(16).hex(), proveedor="google")
+    except ValueError:
+        pass  # El usuario ya existe, continuar
+    
+    # Crear sesión
+    session_token = crear_token_sesion(nombre, correo, "google")
+    response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
+    response.set_cookie(key="session_token", value=session_token, httponly=True, samesite="lax", secure=_COOKIE_SECURE)
+    return response
+
+
+@app.get("/api/auth/google/url", tags=["Auth"])
+async def get_google_auth_url():
+    """Retorna la URL de autorización de Google."""
+    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/google/callback")
+    return {"url": f"https://accounts.google.com/o/oauth2/v2/auth?client_id={os.getenv('GOOGLE_CLIENT_ID')}&redirect_uri={redirect_uri}&response_type=code&scope=openid+email+profile"}
+
+
 @app.get("/api/auth/me", tags=["Auth"])
 async def me(sesion: Dict[str, Any] = Depends(obtener_sesion_actual)):
+    """Retorna los datos del usuario de la sesión activa."""
     return {
         "username": sesion.get("username"),
         "email":    sesion.get("email"),
         "proveedor": sesion.get("proveedor"),
     }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# AUTH — GOOGLE OAUTH 2.0
-# ─────────────────────────────────────────────────────────────────────────────
-
-@app.get("/api/auth/google", tags=["Auth Google"])
-async def google_login(request: Request):
-    """Redirige a Google para autenticación OAuth."""
-    if not google_oauth.esta_configurado():
-        raise HTTPException(
-            status_code=501,
-            detail="Google OAuth no configurado. Contacta al administrador."
-        )
-    
-    # Construir redirect URI dinámicamente
-    base_url = str(request.base_url).rstrip("/")
-    redirect_uri = f"{base_url}/api/auth/google/callback"
-    
-    try:
-        url = google_oauth.obtener_url_autenticacion(redirect_uri)
-        return RedirectResponse(url=url)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/auth/google/callback", tags=["Auth Google"])
-async def google_callback(request: Request, code: str = ""):
-    """Callback de Google OAuth. Procesa el código y crea la sesión."""
-    if not code:
-        return RedirectResponse(url="/login?error=No+se+recibió+código+de+autorización")
-    
-    # Construir redirect URI (debe coincidir con el usado en el login)
-    base_url = str(request.base_url).rstrip("/")
-    redirect_uri = f"{base_url}/api/auth/google/callback"
-    
-    try:
-        user_data = await google_oauth.procesar_callback_google(code, redirect_uri)
-        email = user_data["email"]
-        nombre = user_data["nombre"]
-        
-        # Verificar si el usuario ya existe
-        usuario_existente = buscar_usuario_por_correo(email)
-        
-        if not usuario_existente:
-            # Registrar nuevo usuario de Google
-            try:
-                registrar_usuario(nombre, email, password="", proveedor="google")
-            except ValueError:
-                pass  # Ya existe, continuar
-        
-        # Crear sesión
-        token = crear_token_sesion(nombre, email, "google")
-        response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
-        response.set_cookie(
-            key="session_token", value=token,
-            httponly=True, samesite="lax", secure=_COOKIE_SECURE,
-            max_age=30 * 24 * 3600
-        )
-        return response
-        
-    except Exception as e:
-        error_msg = str(e).replace(" ", "+")
-        return RedirectResponse(url=f"/login?error=Error+con+Google:+{error_msg}")
-
-
-@app.get("/api/auth/google/status", tags=["Auth Google"])
-async def google_status():
-    """Retorna si Google OAuth está configurado."""
-    return {
-        "configurado": google_oauth.esta_configurado(),
-        "client_id": google_oauth.GOOGLE_CLIENT_ID[:20] + "..." if google_oauth.GOOGLE_CLIENT_ID else None
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HEALTH CHECK DE BASES DE DATOS
-# ─────────────────────────────────────────────────────────────────────────────
-
-@app.get("/api/health/databases", tags=["Health Monitor"])
-async def health_databases():
-    """Ejecuta health check completo de todas las BDs y servicios."""
-    return await ejecutar_health_check_completo()
-
-
-@app.get("/api/health/history", tags=["Health Monitor"])
-async def health_history(servicio: str = None, limite: int = 50):
-    """Obtiene historial de health checks."""
-    return await obtener_historial_health(servicio, limite)
-
-
-@app.get("/api/health/stats", tags=["Health Monitor"])
-async def health_stats():
-    """Obtiene estadísticas agregadas de salud."""
-    return await obtener_estadisticas_salud()
-
-
-@app.get("/api/sessions/stats", tags=["Auth"])
-async def session_stats():
-    """Retorna estadísticas de sesiones (solo para debug/admin)."""
-    return obtener_estadisticas_sesiones()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -319,50 +287,33 @@ async def ejecutar_test(request: Request, payload: Dict[str, Any] = Body(...)):
     if not tabla:
         raise HTTPException(status_code=400, detail="Especifica la tabla a consultar.")
 
-    motor = DatabaseFactory.obtener_motor(motor_nombre, credenciales)
-    query, kwargs_extra = "", {}
-
-    if motor_nombre in ("postgres", "mysql", "sqlserver", "sqlite"):
-        query = f"SELECT TOP 100 * FROM {tabla}" if motor_nombre == "sqlserver" else f"SELECT * FROM {tabla} LIMIT 100"
-    elif motor_nombre == "mongodb":
-        query = {}; kwargs_extra["coleccion"] = tabla
-    elif motor_nombre == "neo4j":
-        query = f"MATCH (n:{tabla}) RETURN n LIMIT 100"
-    elif motor_nombre == "redis":
-        kwargs_extra["tipo_comando"] = "get"; query = tabla
-
     try:
-        inicio_db = time.perf_counter_ns()
-        resultados_db = motor.ejecutar_consulta(query, **kwargs_extra)
-        fin_db = time.perf_counter_ns()
-        tiempo_db_ms = (fin_db - inicio_db) / 1_000_000.0
+        benchmark_payload = {
+            "motor_nombre": motor_nombre,
+            "credenciales": credenciales,
+            "tabla": tabla,
+            "reglas": reglas,
+            "limit": 100,
+        }
+        resultado = await _call_masking_service("/benchmark", benchmark_payload, method="POST", timeout=30.0)
 
-        tiempo_mask_ms = 0.0
-        data_final = resultados_db or []
+        data_final = resultado.get("datos_enmascarados", [])
+        tiempo_normal_ms = float(resultado.get("tiempo_normal_ms", 0.0))
+        tiempo_mask_ms = float(resultado.get("tiempo_masked_ms", 0.0))
+        tiempo_encrypted_ms = float(resultado.get("tiempo_encrypted_ms", 0.0))
+        latency_delta_ms = float(resultado.get("latency_delta_ms", 0.0))
+        cpu_overhead = float(resultado.get("cpu_overhead", 0.0))
+        overhead_total_ms = tiempo_normal_ms + tiempo_mask_ms + tiempo_encrypted_ms
 
-        if resultados_db and reglas:
-            async with httpx.AsyncClient() as client:
-                try:
-                    from fastapi.encoders import jsonable_encoder
-                    payload_json = jsonable_encoder({"datos": resultados_db, "reglas": reglas})
-                    res = await client.post(
-                        f"{MASKING_SERVICE_URL}/mask",
-                        json=payload_json,
-                        timeout=10.0
-                    )
-                    if res.status_code == 200:
-                        res_json = res.json()
-                        data_final = res_json.get("datos_enmascarados", [])
-                        tiempo_mask_ms = res_json.get("tiempo_mask_ms", 0.0)
-                    else:
-                        raise Exception(f"Error del servicio de masking: {res.text}")
-                except Exception as e:
-                    raise HTTPException(status_code=502, detail=f"Fallo comunicación con Masking Service: {str(e)}")
-
-        overhead_total_ms = tiempo_db_ms + tiempo_mask_ms
         metrics_payload = {
             "motor_utilizado": motor_nombre,
-            "tiempo_bd_ms": round(tiempo_db_ms, 3),
+            "masking_mode": resultado.get("masking_mode", "visual_mask"),
+            "tiempo_normal_ms": round(tiempo_normal_ms, 3),
+            "tiempo_masked_ms": round(tiempo_mask_ms, 3),
+            "tiempo_encrypted_ms": round(tiempo_encrypted_ms, 3),
+            "latency_delta_ms": round(latency_delta_ms, 3),
+            "cpu_overhead": round(cpu_overhead, 3),
+            "tiempo_bd_ms": round(tiempo_normal_ms, 3),
             "tiempo_mask_ms": round(tiempo_mask_ms, 3),
             "overhead_total_ms": round(overhead_total_ms, 3),
             "filas_procesadas": len(data_final)
@@ -370,13 +321,31 @@ async def ejecutar_test(request: Request, payload: Dict[str, Any] = Body(...)):
 
         async with httpx.AsyncClient() as client:
             try:
-                await client.post(f"{MONITOR_SERVICE_URL}/metrics", json=metrics_payload, timeout=2.0)
+                await client.post(
+                    f"{MONITOR_SERVICE_URL}/metrics",
+                    json=metrics_payload,
+                    timeout=2.0
+                )
+                algorithm_metrics = resultado.get("algorithm_metrics", [])
+                if algorithm_metrics:
+                    await client.post(
+                        f"{MONITOR_SERVICE_URL}/algorithm-metrics",
+                        json={"metrics": algorithm_metrics},
+                        timeout=2.0,
+                    )
             except Exception as e:
-                print(f"[GATEWAY] Advertencia: No se pudieron enviar métricas: {e}")
+                print(f"[GATEWAY] Advertencia: No se pudieron enviar métricas al Monitor Service: {e}")
 
+        # Formato de retorno exacto esperado por el frontend
         return {
             "motor_utilizado": motor_nombre,
-            "tiempo_bd_ms": round(tiempo_db_ms, 3),
+            "masking_mode": resultado.get("masking_mode", "visual_mask"),
+            "tiempo_normal_ms": round(tiempo_normal_ms, 3),
+            "tiempo_masked_ms": round(tiempo_mask_ms, 3),
+            "tiempo_encrypted_ms": round(tiempo_encrypted_ms, 3),
+            "latency_delta_ms": round(latency_delta_ms, 3),
+            "cpu_overhead": round(cpu_overhead, 3),
+            "tiempo_bd_ms": round(tiempo_normal_ms, 3),
             "tiempo_enmascarado_ms": round(tiempo_mask_ms, 3),
             "overhead_total_ms": round(overhead_total_ms, 3),
             "filas_procesadas": len(data_final),
@@ -494,6 +463,175 @@ async def estado_gobernanza(connection_id: str, tabla: str, request: Request):
             raise HTTPException(status_code=502, detail=f"Fallo comunicación con Masking Service: {str(e)}")
 
 
+@app.get("/api/v1/monitor/system", tags=["Monitor"])
+async def monitor_system():
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(f"{MONITOR_SERVICE_URL}/system/metrics", timeout=10.0)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Fallo comunicando con Monitor Service: {str(e)}")
+
+
+@app.get("/api/v1/monitor/services", tags=["Monitor"])
+async def monitor_services():
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(f"{MONITOR_SERVICE_URL}/service-health", json={}, timeout=10.0)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Fallo comunicando con Monitor Service: {str(e)}")
+
+
+@app.get("/api/v1/monitor/databases", tags=["Monitor"])
+async def monitor_databases(request: Request, sesion: Dict[str, Any] = Depends(obtener_sesion_actual)):
+    conexiones = list((sesion.get("conexiones") or {}).values())
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{MONITOR_SERVICE_URL}/db-health",
+                json={"connections": conexiones},
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Fallo comunicando con Monitor Service: {str(e)}")
+
+
+@app.get("/api/v1/monitor/algorithms", tags=["Monitor"])
+async def monitor_algorithms():
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(f"{MONITOR_SERVICE_URL}/algorithm-ranking", timeout=10.0)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Fallo comunicando con Monitor Service: {str(e)}")
+
+
+@app.get("/api/v1/monitor/engine-stats", tags=["Monitor"])
+async def monitor_engine_stats():
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(f"{MONITOR_SERVICE_URL}/engine-stats", timeout=10.0)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Fallo comunicando con Monitor Service: {str(e)}")
+
+
+@app.get("/api/v1/monitor/errors", tags=["Monitor"])
+async def monitor_errors(limit: int = 50):
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(f"{MONITOR_SERVICE_URL}/errors", params={"limit": limit}, timeout=10.0)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Fallo comunicando con Monitor Service: {str(e)}")
+
+
+@app.post("/api/v1/monitor/errors", tags=["Monitor"])
+async def monitor_save_error(payload: Dict[str, Any] = Body(...)):
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(f"{MONITOR_SERVICE_URL}/errors", json=payload, timeout=10.0)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Fallo comunicando con Monitor Service: {str(e)}")
+
+
+@app.get("/mask/preview", tags=["Masking Académico"])
+async def mask_preview(request: Request, payload: Dict[str, Any] = Body(...)):
+    connection_id = payload.get("connection_id")
+    if not connection_id:
+        raise HTTPException(status_code=400, detail="Falta connection_id.")
+    config = obtener_conexion(request, connection_id)
+    tabla = payload.get("table") or payload.get("tabla")
+    columna = payload.get("column") or payload.get("columna")
+    if not tabla or not columna:
+        raise HTTPException(status_code=400, detail="Faltan table/tabla y column/columna.")
+    return await _call_masking_service("/mask/preview", {
+        "motor_nombre": config.get("motor"),
+        "credenciales": config.get("credenciales"),
+        "tabla": tabla,
+        "column": columna,
+        "mask_type": payload.get("mask_type", "generic"),
+    }, method="GET", timeout=10.0)
+
+
+@app.get("/mask/view", tags=["Masking Académico"])
+async def mask_view(request: Request, payload: Dict[str, Any] = Body(...)):
+    connection_id = payload.get("connection_id")
+    if not connection_id:
+        raise HTTPException(status_code=400, detail="Falta connection_id.")
+    config = obtener_conexion(request, connection_id)
+    tabla = payload.get("table") or payload.get("tabla")
+    columna = payload.get("column") or payload.get("columna")
+    if not tabla or not columna:
+        raise HTTPException(status_code=400, detail="Faltan table/tabla y column/columna.")
+    return await _call_masking_service("/mask/view", {
+        "motor_nombre": config.get("motor"),
+        "credenciales": config.get("credenciales"),
+        "tabla": tabla,
+        "column": columna,
+        "mask_type": payload.get("mask_type", "generic"),
+        "limit": payload.get("limit", 20),
+    }, method="GET", timeout=10.0)
+
+
+@app.post("/encrypt", tags=["Cifrado"])
+async def encrypt(request: Request, payload: Dict[str, Any] = Body(...)):
+    connection_id = payload.get("connection_id")
+    if not connection_id:
+        raise HTTPException(status_code=400, detail="Falta connection_id.")
+    config = obtener_conexion(request, connection_id)
+    tabla = payload.get("table") or payload.get("tabla")
+    columna = payload.get("column") or payload.get("columna")
+    if not tabla or not columna:
+        raise HTTPException(status_code=400, detail="Faltan table/tabla y column/columna.")
+    return await _call_masking_service("/encrypt", {
+        "motor_nombre": config.get("motor"),
+        "credenciales": config.get("credenciales"),
+        "tabla": tabla,
+        "column": columna,
+    }, method="POST", timeout=30.0)
+
+
+@app.post("/decrypt", tags=["Cifrado"])
+async def decrypt(request: Request, payload: Dict[str, Any] = Body(...)):
+    connection_id = payload.get("connection_id")
+    if not connection_id:
+        raise HTTPException(status_code=400, detail="Falta connection_id.")
+    config = obtener_conexion(request, connection_id)
+    tabla = payload.get("table") or payload.get("tabla")
+    columna = payload.get("column") or payload.get("columna")
+    if not tabla or not columna:
+        raise HTTPException(status_code=400, detail="Faltan table/tabla y column/columna.")
+    return await _call_masking_service("/decrypt", {
+        "motor_nombre": config.get("motor"),
+        "credenciales": config.get("credenciales"),
+        "tabla": tabla,
+        "column": columna,
+    }, method="POST", timeout=30.0)
+
+
+@app.get("/api/v1/monitor/metrics", tags=["Monitor"])
+async def monitor_metrics():
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(f"{MONITOR_SERVICE_URL}/metrics", timeout=5.0)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Fallo comunicando con Monitor Service: {str(e)}")
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+

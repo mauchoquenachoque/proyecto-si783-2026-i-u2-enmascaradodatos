@@ -6,8 +6,9 @@ siguen siendo descifrables.
 """
 import hashlib
 import os
+import re
 from cryptography.fernet import Fernet
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from config import settings
 
@@ -92,3 +93,80 @@ def cifrar_valor(texto: str) -> str:
 def descifrar_valor(token: str) -> str:
     """Descifra un token Fernet. Usado por SDM durante la restauración."""
     return cipher_suite.decrypt(token.encode("utf-8")).decode("utf-8")
+
+
+def mask_name(value: Optional[str]) -> str:
+    if value is None:
+        return ""
+    partes = [p for p in re.split(r"(\s+)", str(value).strip()) if p != ""]
+    resultado = []
+    for parte in partes:
+        if parte.isspace():
+            resultado.append(parte)
+        elif re.search(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]", parte):
+            resultado.append(parte[:1] + ("*" * max(len(parte) - 1, 0)))
+        else:
+            resultado.append(parte)
+    return "".join(resultado)
+
+
+def mask_email(value: Optional[str]) -> str:
+    if value is None:
+        return ""
+    texto = str(value).strip()
+    if "@" not in texto:
+        return mask_generic(texto)
+    local, domain = texto.split("@", 1)
+    if len(local) <= 3:
+        local_mask = local[:1] + ("*" * max(len(local) - 1, 0))
+    else:
+        local_mask = local[:3] + ("*" * max(len(local) - 3, 0))
+    return f"{local_mask}@{domain}"
+
+
+def mask_phone(value: Optional[str]) -> str:
+    if value is None:
+        return ""
+    digits = re.sub(r"\D", "", str(value))
+    if len(digits) <= 5:
+        return mask_generic(digits)
+    head = digits[:3]
+    tail = digits[-2:]
+    middle = "*" * max(len(digits) - 5, 0)
+    return f"{head}{middle}{tail}"
+
+
+def mask_dni(value: Optional[str]) -> str:
+    if value is None:
+        return ""
+    texto = re.sub(r"\s+", "", str(value).strip())
+    if len(texto) <= 4:
+        return mask_generic(texto)
+    head = texto[:3]
+    tail = texto[-1:]
+    middle = "*" * max(len(texto) - 4, 0)
+    return f"{head}{middle}{tail}"
+
+
+def mask_generic(value: Optional[str]) -> str:
+    if value is None:
+        return ""
+    texto = str(value)
+    if len(texto) <= 2:
+        return texto[:1] + ("*" * max(len(texto) - 1, 0))
+    if len(texto) <= 5:
+        return texto[:1] + ("*" * max(len(texto) - 2, 0)) + texto[-1:]
+    return texto[:2] + ("*" * max(len(texto) - 4, 0)) + texto[-2:]
+
+
+def academic_mask_value(value: Optional[str], mask_type: str = "generic") -> str:
+    mask_type = (mask_type or "generic").strip().lower()
+    if mask_type == "name":
+        return mask_name(value)
+    if mask_type == "email":
+        return mask_email(value)
+    if mask_type == "phone":
+        return mask_phone(value)
+    if mask_type == "dni":
+        return mask_dni(value)
+    return mask_generic(value)

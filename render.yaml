@@ -1,10 +1,35 @@
-# SecOps Universal — Blueprint para Render v6.0
-# Guía completa: RENDER-DEPLOY.md
+# SecOps Universal — Blueprint para Render
+# Guia: RENDER-DEPLOY.md
 
 services:
-  # ─────────────────────────────────────────────────────────
-  # 1. API Gateway (servicio principal)
-  # ─────────────────────────────────────────────────────────
+  - type: web
+    name: secops-monitor
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerCommand: render-start.sh
+    healthCheckPath: /health
+    envVars:
+      - key: UVICORN_APP
+        value: monitor_service:app
+      - key: DATA_DIR
+        value: /app/data
+
+  - type: web
+    name: secops-masking
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerCommand: render-start.sh
+    healthCheckPath: /health
+    envVars:
+      - key: UVICORN_APP
+        value: masking_service:app
+      - key: DATA_DIR
+        value: /app/data
+
   - type: web
     name: secops-api
     runtime: docker
@@ -23,7 +48,7 @@ services:
       - key: ADMIN_EMAIL
         value: admin@secops.local
       - key: ADMIN_PASSWORD
-        generateValue: true
+        value: "Admin1234!"
       - key: ADMIN_NAME
         value: Administrador SecOps
       - key: MASKING_SERVICE_URL
@@ -36,43 +61,3 @@ services:
           type: web
           name: secops-monitor
           envVarKey: RENDER_EXTERNAL_URL
-      - key: GOOGLE_CLIENT_ID
-        sync: false
-      - key: GOOGLE_CLIENT_SECRET
-        sync: false
-      - key: GOOGLE_REDIRECT_URI
-        sync: false
-
-  # ─────────────────────────────────────────────────────────
-  # 2. Masking Service
-  # ─────────────────────────────────────────────────────────
-  - type: web
-    name: secops-masking
-    runtime: docker
-    plan: free
-    region: oregon
-    dockerfilePath: ./Dockerfile
-    dockerCommand: render-start.sh
-    healthCheckPath: /health
-    envVars:
-      - key: UVICORN_APP
-        value: masking_service:app
-      - key: DATA_DIR
-        value: /app/data
-
-  # ─────────────────────────────────────────────────────────
-  # 3. Monitor Service
-  # ─────────────────────────────────────────────────────────
-  - type: web
-    name: secops-monitor
-    runtime: docker
-    plan: free
-    region: oregon
-    dockerfilePath: ./Dockerfile
-    dockerCommand: render-start.sh
-    healthCheckPath: /health
-    envVars:
-      - key: UVICORN_APP
-        value: monitor_service:app
-      - key: DATA_DIR
-        value: /app/data
