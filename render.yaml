@@ -3,34 +3,6 @@
 
 services:
   - type: web
-    name: secops-monitor
-    runtime: docker
-    plan: free
-    region: oregon
-    dockerfilePath: ./Dockerfile
-    dockerCommand: render-start.sh
-    healthCheckPath: /health
-    envVars:
-      - key: UVICORN_APP
-        value: monitor_service:app
-      - key: DATA_DIR
-        value: /app/data
-
-  - type: web
-    name: secops-masking
-    runtime: docker
-    plan: free
-    region: oregon
-    dockerfilePath: ./Dockerfile
-    dockerCommand: render-start.sh
-    healthCheckPath: /health
-    envVars:
-      - key: UVICORN_APP
-        value: masking_service:app
-      - key: DATA_DIR
-        value: /app/data
-
-  - type: web
     name: secops-api
     runtime: docker
     plan: free
@@ -52,12 +24,6 @@ services:
       - key: ADMIN_NAME
         value: Administrador SecOps
       - key: MASKING_SERVICE_URL
-        fromService:
-          type: web
-          name: secops-masking
-          envVarKey: RENDER_EXTERNAL_URL
+        value: http://localhost:8001
       - key: MONITOR_SERVICE_URL
-        fromService:
-          type: web
-          name: secops-monitor
-          envVarKey: RENDER_EXTERNAL_URL
+        value: http://localhost:8002
