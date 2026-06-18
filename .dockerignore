@@ -19,7 +19,6 @@ env/
 platform_users.db
 monitor_metrics.db
 local_monitor.db
-data/
 
 # Logs y temporales
 *.log

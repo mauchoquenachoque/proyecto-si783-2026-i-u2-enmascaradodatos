@@ -7,6 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Instalar librerias runtime del sistema y dos2unix
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     freetds-common \
@@ -18,9 +19,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p /app/data \
-    && dos2unix scripts/render-start.sh \
-    && chmod +x scripts/render-start.sh
+RUN mkdir -p /app/data
+
+RUN dos2unix scripts/render-start.sh
+RUN chmod +x scripts/render-start.sh
 
 EXPOSE 10000
 

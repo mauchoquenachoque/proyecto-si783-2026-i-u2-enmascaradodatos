@@ -57,10 +57,10 @@ class PostgresDB(BaseDeDatos):
             esquema[t_name].append(c_name)
         return {"tablas": esquema}
 
-    def ejecutar_consulta(self, query_o_filtro: str, **kwargs) -> List[Dict[str, Any]]:
+    def ejecutar_consulta(self, query_o_filtro: str, params: Any = None, **kwargs) -> List[Dict[str, Any]]:
         with self.conectar() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(query_o_filtro)
+                cursor.execute(query_o_filtro, params)
                 if cursor.description: return [dict(row) for row in cursor.fetchall()]
                 return []
 
@@ -78,8 +78,8 @@ class MySQLDB(BaseDeDatos):
     def obtener_esquema(self) -> Dict[str, List[str]]:
         esquema = {}
         db = self.credenciales.get('database')
-        query = f"SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = '{db}'"
-        resultados = self.ejecutar_consulta(query)
+        query = f"SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = %s"
+        resultados = self.ejecutar_consulta(query, db)
         for fila in resultados:
             t_name = fila.get('table_name') or fila.get('TABLE_NAME')
             c_name = fila.get('column_name') or fila.get('COLUMN_NAME')
@@ -87,11 +87,11 @@ class MySQLDB(BaseDeDatos):
             esquema[t_name].append(c_name)
         return {"tablas": esquema}
 
-    def ejecutar_consulta(self, query_o_filtro: str, **kwargs) -> List[Dict[str, Any]]:
+    def ejecutar_consulta(self, query_o_filtro: str, params: Any = None, **kwargs) -> List[Dict[str, Any]]:
         conexion = self.conectar()
         try:
             with conexion.cursor() as cursor:
-                cursor.execute(query_o_filtro)
+                cursor.execute(query_o_filtro, params)
                 if cursor.description: return cursor.fetchall()
                 conexion.commit()
                 return []
@@ -114,10 +114,10 @@ class SQLiteDB(BaseDeDatos):
             esquema[t_name] = [c['name'] for c in cols]
         return {"tablas": esquema}
 
-    def ejecutar_consulta(self, query_o_filtro: str, **kwargs) -> List[Dict[str, Any]]:
+    def ejecutar_consulta(self, query_o_filtro: str, params: Any = None, **kwargs) -> List[Dict[str, Any]]:
         with self.conectar() as conn:
             cursor = conn.cursor()
-            cursor.execute(query_o_filtro)
+            cursor.execute(query_o_filtro, params)
             if cursor.description: return [dict(row) for row in cursor.fetchall()]
             conn.commit()
             return []
@@ -129,13 +129,12 @@ class SQLServerDB(BaseDeDatos):
             port=str(self.credenciales.get('port', 1433)),
             user=self.credenciales.get('user'),
             password=self.credenciales.get('password'),
-            database=self.credenciales.get('database'),
-            as_dict=True
+            database=self.credenciales.get('database')
         )
 
     def obtener_esquema(self) -> Dict[str, List[str]]:
         esquema = {}
-        query = "SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS"
+        query = "SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'dbo'"
         resultados = self.ejecutar_consulta(query)
         for fila in resultados:
             t_name = fila['TABLE_NAME']
@@ -144,11 +143,11 @@ class SQLServerDB(BaseDeDatos):
             esquema[t_name].append(c_name)
         return {"tablas": esquema}
 
-    def ejecutar_consulta(self, query_o_filtro: str, **kwargs) -> List[Dict[str, Any]]:
+    def ejecutar_consulta(self, query_o_filtro: str, params: Any = None, **kwargs) -> List[Dict[str, Any]]:
         conexion = self.conectar()
         try:
-            with conexion.cursor() as cursor:
-                cursor.execute(query_o_filtro)
+            with conexion.cursor(as_dict=True) as cursor:
+                cursor.execute(query_o_filtro, params)
                 if cursor.description: return cursor.fetchall()
                 conexion.commit()
                 return []
