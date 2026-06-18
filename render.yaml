@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: secops-api
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: DATA_DIR
+        value: /app/data
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ADMIN_EMAIL
+        value: admin@secops.local
+      - key: ADMIN_PASSWORD
+        value: Admin1234!
+      - key: ADMIN_NAME
+        value: Administrador SecOps
+      - key: MASKING_SERVICE_URL
+        value: http://localhost:8001
+      - key: MONITOR_SERVICE_URL
+        value: http://localhost:8002
