@@ -10,7 +10,8 @@ function Test-Docker {
         $null = Get-Command docker -ErrorAction Stop
         docker info *> $null
         return $true
-    } catch {
+    }
+    catch {
         return $false
     }
 }

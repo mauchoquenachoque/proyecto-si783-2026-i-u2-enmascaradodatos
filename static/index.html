@@ -200,52 +200,65 @@
     <section id="view-health" class="fade-in space-y-6 hidden">
         <h2 class="text-2xl font-bold text-white mb-6">Health Monitor Dashboard</h2>
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div class="glass p-6">
-                <h3 class="text-sm font-semibold text-slate-300 mb-4">CPU Histórico</h3>
-                <div class="h-52"><canvas id="chart-cpu"></canvas></div>
+            <div class="glass p-4">
+                <h3 class="text-sm font-semibold text-slate-300 mb-3">CPU Histórico</h3>
+                <div style="position:relative;height:180px;"><canvas id="chart-cpu"></canvas></div>
             </div>
-            <div class="glass p-6">
-                <h3 class="text-sm font-semibold text-slate-300 mb-4">RAM Histórica</h3>
-                <div class="h-52"><canvas id="chart-ram"></canvas></div>
+            <div class="glass p-4">
+                <h3 class="text-sm font-semibold text-slate-300 mb-3">RAM Histórica</h3>
+                <div style="position:relative;height:180px;"><canvas id="chart-ram"></canvas></div>
             </div>
-            <div class="glass p-6">
-                <h3 class="text-sm font-semibold text-slate-300 mb-4">Disco Histórico</h3>
-                <div class="h-52"><canvas id="chart-disk"></canvas></div>
+            <div class="glass p-4">
+                <h3 class="text-sm font-semibold text-slate-300 mb-3">Disco Histórico</h3>
+                <div style="position:relative;height:180px;"><canvas id="chart-disk"></canvas></div>
             </div>
         </div>
     </section>
 
     <!-- DATABASE OBSERVATORY -->
     <section id="view-databases" class="fade-in space-y-6 hidden">
-        <h2 class="text-2xl font-bold text-white mb-6">Database Observatory</h2>
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="flex items-center justify-between mb-6">
+            <h2 class="text-2xl font-bold text-white">Database Observatory</h2>
+            <button onclick="refreshObservatory()" class="btn btn-primary flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                Actualizar
+            </button>
+        </div>
+        <div id="obs-no-connections" class="glass p-8 text-center hidden">
+            <svg class="w-12 h-12 text-slate-600 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
+            <p class="text-slate-400 font-semibold">No hay conexiones registradas</p>
+            <p class="text-slate-500 text-sm mt-1">Ve a <strong>Configuración</strong> para conectar una base de datos. Una vez conectada, aparecerá aquí con su estado de salud en tiempo real.</p>
+        </div>
+        <div id="obs-content" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div class="glass p-6 lg:col-span-2">
-                <h3 class="text-sm font-semibold text-slate-300 mb-4">Estado de Motores</h3>
+                <h3 class="text-sm font-semibold text-slate-300 mb-4">Estado de Motores Conectados</h3>
                 <div class="bg-black/30 border border-white/5 rounded overflow-hidden">
                     <table id="db-state-table">
-                        <thead><tr><th>Motor</th><th>Estado</th><th>Latencia</th></tr></thead>
-                        <tbody id="db-state-body"></tbody>
+                        <thead><tr><th>Alias</th><th>Motor</th><th>Estado</th><th>Latencia</th><th>Info</th></tr></thead>
+                        <tbody id="db-state-body"><tr><td colspan="5" class="text-center text-slate-500 py-6 text-xs">Cargando...</td></tr></tbody>
                     </table>
                 </div>
                 
-                <h3 class="text-sm font-semibold text-slate-300 mt-8 mb-4">Ranking de Rendimiento (Latencia)</h3>
-                <div class="h-40"><canvas id="chart-db-ranking"></canvas></div>
+                <h3 class="text-sm font-semibold text-slate-300 mt-8 mb-3">Ranking de Rendimiento (Latencia promedio)</h3>
+                <div style="position:relative;height:160px;"><canvas id="chart-db-ranking"></canvas></div>
             </div>
-            <div class="glass p-6 lg:col-span-1">
+            <div class="glass p-6 lg:col-span-1 space-y-4">
                 <h3 class="text-sm font-semibold text-slate-300 mb-4">Disponibilidad</h3>
-                <div class="space-y-4">
-                    <div class="bg-black/30 p-4 rounded border border-white/5">
-                        <p class="text-xs text-slate-400 uppercase tracking-wider">Servicios Activos</p>
-                        <p id="obs-services" class="text-2xl font-bold text-sky-400 mt-1 mono">0</p>
-                    </div>
-                    <div class="bg-black/30 p-4 rounded border border-white/5">
-                        <p class="text-xs text-slate-400 uppercase tracking-wider">Bases Activas</p>
-                        <p id="obs-dbs" class="text-2xl font-bold text-emerald-400 mt-1 mono">0</p>
-                    </div>
-                    <div class="bg-black/30 p-4 rounded border border-white/5">
-                        <p class="text-xs text-slate-400 uppercase tracking-wider">Errores Detectados</p>
-                        <p id="obs-errors" class="text-2xl font-bold text-rose-400 mt-1 mono">0</p>
-                    </div>
+                <div class="bg-black/30 p-4 rounded border border-white/5">
+                    <p class="text-xs text-slate-400 uppercase tracking-wider">Bases Activas (UP)</p>
+                    <p id="obs-dbs" class="text-2xl font-bold text-emerald-400 mt-1 mono">0</p>
+                </div>
+                <div class="bg-black/30 p-4 rounded border border-white/5">
+                    <p class="text-xs text-slate-400 uppercase tracking-wider">Bases Caídas (DOWN)</p>
+                    <p id="obs-dbs-down" class="text-2xl font-bold text-rose-400 mt-1 mono">0</p>
+                </div>
+                <div class="bg-black/30 p-4 rounded border border-white/5">
+                    <p class="text-xs text-slate-400 uppercase tracking-wider">Total Conexiones</p>
+                    <p id="obs-total" class="text-2xl font-bold text-sky-400 mt-1 mono">0</p>
+                </div>
+                <div class="bg-black/30 p-4 rounded border border-white/5">
+                    <p class="text-xs text-slate-400 uppercase tracking-wider mb-2">Estado de Servicios</p>
+                    <div id="obs-services-list" class="space-y-1 text-xs mono"></div>
                 </div>
             </div>
         </div>
@@ -283,9 +296,9 @@
                     </div>
                 </div>
             </div>
-            <div class="glass p-6">
-                <h3 class="text-sm font-semibold text-slate-300 mb-4">Gráfico de Overhead</h3>
-                <div class="h-64"><canvas id="chart-overhead"></canvas></div>
+            <div class="glass p-4">
+                <h3 class="text-sm font-semibold text-slate-300 mb-3">Gráfico de Overhead</h3>
+                <div style="position:relative;height:180px;"><canvas id="chart-overhead"></canvas></div>
             </div>
         </div>
     </section>
@@ -318,7 +331,6 @@
                         <option value="sqlserver">SQL Server</option>
                         <option value="mongodb">MongoDB</option>
                         <option value="redis">Redis</option>
-                        <option value="neo4j">Neo4j</option>
                     </select>
                 </div>
                 <div><label class="block text-xs text-slate-400 mb-1">Alias</label><input type="text" id="conn-alias" class="input-field" placeholder="Mi DB"></div>
@@ -373,6 +385,9 @@
         });
         if(target === 'security' && connections.length > 0) {
             updateSecurityContextSelect();
+        }
+        if(target === 'databases') {
+            refreshObservatory();
         }
     }
 
@@ -462,20 +477,8 @@
                 chartConfigs.disk.update();
             }
 
-            // Update Database Observatory
-            const tbody = document.getElementById('db-state-body');
-            tbody.innerHTML = '';
-            dbs.forEach(db => {
-                const tr = document.createElement('tr');
-                const badge = db.status === 'UP' ? 'status-up' : 'status-down';
-                tr.innerHTML = `<td>${db.engine}</td><td><span class="status-badge ${badge}">${db.status}</span></td><td>${(db.latency_ms||0).toFixed(2)} ms</td>`;
-                tbody.appendChild(tr);
-            });
-            
-            document.getElementById('obs-services').textContent = svcs.filter(s=>s.status==='UP').length;
-            document.getElementById('obs-dbs').textContent = dbs.filter(d=>d.status==='UP').length;
-            document.getElementById('obs-errors').textContent = errors.length;
-
+            // Update Database Observatory counters (from polling data)
+            updateObservatoryCounters(dbs, svcs);
             updateDBRankingChart(engStats);
 
             // Update Algorithm Analytics
@@ -548,6 +551,92 @@
         chartConfigs.overhead.update();
     }
 
+    // --- DATABASE OBSERVATORY ---
+    async function refreshObservatory() {
+        const tbody = document.getElementById('db-state-body');
+        const noConn = document.getElementById('obs-no-connections');
+        const obsContent = document.getElementById('obs-content');
+
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-slate-500 py-6 text-xs">Verificando conexiones...</td></tr>';
+
+        try {
+            const res = await fetch('/api/v1/monitor/databases');
+            const dbs = res.ok ? await res.json() : [];
+
+            // Also fetch service health
+            const svcsRes = await fetch('/api/v1/monitor/services').catch(() => ({ ok: false }));
+            const svcs = svcsRes.ok ? await svcsRes.json() : [];
+
+            if (!Array.isArray(dbs) || dbs.length === 0) {
+                noConn.classList.remove('hidden');
+                obsContent.classList.add('hidden');
+                return;
+            }
+
+            noConn.classList.add('hidden');
+            obsContent.classList.remove('hidden');
+
+            tbody.innerHTML = '';
+            dbs.forEach(db => {
+                const isUp = db.status === 'UP';
+                const badge = isUp ? 'status-up' : 'status-down';
+                const latency = db.latency_ms !== undefined ? db.latency_ms.toFixed(2) + ' ms' : '—';
+                const info = db.error
+                    ? `<span class="text-rose-400 text-xs truncate block max-w-xs" title="${db.error}">⚠ ${db.error.substring(0, 60)}${db.error.length > 60 ? '...' : ''}</span>`
+                    : `<span class="text-slate-500 text-xs">OK</span>`;
+                const alias = db.alias || db.engine;
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td class="font-medium text-slate-200">${alias}</td>
+                    <td class="text-slate-400 uppercase text-xs">${db.engine}</td>
+                    <td><span class="status-badge ${badge}">${db.status}</span></td>
+                    <td class="mono text-xs ${isUp ? 'text-emerald-400' : 'text-rose-400'}">${latency}</td>
+                    <td>${info}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            updateObservatoryCounters(dbs, svcs);
+
+            // Update ranking chart from live data
+            const chartData = dbs.map(d => ({ engine: d.alias || d.engine, latency: d.latency_ms || 0 }));
+            if (chartConfigs.dbRanking) {
+                chartConfigs.dbRanking.data.labels = chartData.map(d => d.engine);
+                chartConfigs.dbRanking.data.datasets[0].data = chartData.map(d => d.latency);
+                chartConfigs.dbRanking.update();
+            }
+
+        } catch(e) {
+            tbody.innerHTML = `<tr><td colspan="5" class="text-center text-rose-400 py-6 text-xs">Error al cargar: ${e.message}</td></tr>`;
+        }
+    }
+
+    function updateObservatoryCounters(dbs, svcs) {
+        const up = dbs.filter(d => d.status === 'UP').length;
+        const down = dbs.filter(d => d.status !== 'UP').length;
+        const total = dbs.length;
+
+        const elUp = document.getElementById('obs-dbs');
+        const elDown = document.getElementById('obs-dbs-down');
+        const elTotal = document.getElementById('obs-total');
+        if (elUp) elUp.textContent = up;
+        if (elDown) elDown.textContent = down;
+        if (elTotal) elTotal.textContent = total;
+
+        // Service health list
+        const svcList = document.getElementById('obs-services-list');
+        if (svcList && svcs.length > 0) {
+            svcList.innerHTML = '';
+            svcs.forEach(s => {
+                const color = s.status === 'UP' ? 'text-emerald-400' : 'text-rose-400';
+                const dot = s.status === 'UP' ? '●' : '○';
+                svcList.innerHTML += `<div class="flex justify-between"><span class="text-slate-400">${s.service}</span><span class="${color}">${dot} ${s.status}</span></div>`;
+            });
+        } else if (svcList) {
+            svcList.innerHTML = '<span class="text-slate-500 text-xs">Sin datos de servicios</span>';
+        }
+    }
+
     // --- CONFIG & CONNECTIONS ---
     function toggleFormFields() {
         const motor = document.getElementById('conn-motor').value;
@@ -615,111 +704,243 @@
 
     async function loadTablesForSecurity() {
         const cid = document.getElementById('sec-conn-select').value;
+        const sel = document.getElementById('sec-table-select');
         if(!cid) return;
-        const res = await fetch('/api/v1/schema?connection_id=' + cid);
-        if(res.ok) {
-            const data = await res.json();
-            schemaCache = data.tablas || {};
-            const sel = document.getElementById('sec-table-select');
-            sel.innerHTML = '<option value="">Selecciona Tabla</option>';
-            Object.keys(schemaCache).forEach(t => sel.innerHTML += `<option value="${t}">${t}</option>`);
+        
+        sel.innerHTML = '<option>Cargando...</option>';
+        try {
+            const res = await fetch('/api/v1/schema?connection_id=' + cid);
+            if(res.ok) {
+                const data = await res.json();
+                schemaCache = data.tablas || {};
+                sel.innerHTML = '<option value="">Selecciona Tabla</option>';
+                Object.keys(schemaCache).forEach(t => sel.innerHTML += `<option value="${t}">${t}</option>`);
+            } else throw new Error("Error al cargar tablas");
+        } catch(e) {
+            sel.innerHTML = '<option>Error al cargar</option>';
+            alert(e.message);
         }
     }
 
-    function loadColumnsForSecurity() {
+    async function loadColumnsForSecurity() {
         const table = document.getElementById('sec-table-select').value;
         if(!table) return;
         const cols = schemaCache[table] || [];
         const container = document.getElementById('sec-columns');
+        container.innerHTML = '<span class="text-xs text-slate-500">Cargando columnas...</span>';
         container.innerHTML = '';
         cols.forEach(c => {
             container.innerHTML += `<div class="flex items-center gap-2"><input type="checkbox" id="chk-${c}" value="${c}" class="col-chk"> <label for="chk-${c}">${c}</label></div>`;
         });
+        await loadOriginalData();
     }
 
-    async function performSecurityAction(endpoint, bodyParams, updateTables = true) {
+    function _setTableError(headId, bodyId, msg) {
+        const head = document.getElementById(headId);
+        const body = document.getElementById(bodyId);
+        if(head) head.innerHTML = '<th style="color:#ef4444">&#9888; Error</th>';
+        if(body) body.innerHTML = `<tr><td style="color:#ef4444;font-size:12px;padding:8px 0">${msg}</td></tr>`;
+    }
+
+    async function loadOriginalData() {
         const cid = document.getElementById('sec-conn-select').value;
         const table = document.getElementById('sec-table-select').value;
-        const algo = document.getElementById('sec-algo').value;
-        if(!cid || !table) return alert('Selecciona conexión y tabla');
-
-        const checkedCols = Array.from(document.querySelectorAll('.col-chk:checked')).map(cb => cb.value);
-        if(checkedCols.length === 0) return alert('Selecciona al menos una columna');
-
-        // Update UI
-        document.getElementById('flow-algo').textContent = algo.toUpperCase();
-        
-        let reqBody = { connection_id: cid, tabla: table, ...bodyParams };
-        
-        // Form rules object if execute_test or protect
-        if(endpoint === '/api/v1/execute_test' || endpoint === '/api/v1/governance/protect') {
-            let reglas = {};
-            checkedCols.forEach(c => reglas[c] = algo);
-            reqBody.reglas = reglas;
-        } else {
-            reqBody.column = checkedCols[0]; // Encrypt usually takes one, or we loop. The backend encrypts one column at a time usually. We'll send column: checkedCols[0] for simplicity based on main.py
-            reqBody.columna = checkedCols[0];
-        }
-
+        if (!cid || !table) return;
+        const headO = document.getElementById('sec-head-original');
+        const bodyO = document.getElementById('sec-body-original');
+        if(headO) headO.innerHTML = '<th style="color:#38bdf8">Cargando...</th>';
+        if(bodyO) bodyO.innerHTML = '<tr><td style="color:#64748b;padding:8px 0">&#8635; Obteniendo datos...</td></tr>';
         try {
-            const res = await fetch(endpoint, { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(reqBody) });
-            const data = await res.json();
-            
-            if(res.ok && updateTables) {
-                // Populate tables
-                renderSecurityTables(data.data || []);
+            const res = await fetch('/api/v1/execute_test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ connection_id: cid, tabla: table, reglas: {} })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                const rows = data.data || [];
+                if (rows.length === 0) {
+                    _setTableError('sec-head-original', 'sec-body-original', 'La tabla est&#225; vac&#237;a o sin datos.');
+                } else {
+                    renderOriginalTable(rows);
+                }
+            } else {
+                const err = await res.json().catch(() => ({}));
+                _setTableError('sec-head-original', 'sec-body-original', err.detail || `Error ${res.status}: No se pudieron cargar los datos.`);
             }
-            return data;
         } catch(e) {
-            console.error("Security Action Error:", e);
+            _setTableError('sec-head-original', 'sec-body-original', 'Error de red: ' + e.message);
         }
     }
 
-    function renderSecurityTables(dataArray) {
-        if(!dataArray || dataArray.length === 0) return;
-        // Mock Original by unmasking visually? Actually backend execute_test returns masked data.
-        // We'll just show the same data for now or fetch original separately if needed. 
-        // Real implementation: We need both.
-        // Since backend execute_test returns enmascarados, let's put it in Masked.
-        const headM = document.getElementById('sec-head-masked');
-        const bodyM = document.getElementById('sec-body-masked');
-        headM.innerHTML = ''; bodyM.innerHTML = '';
-        
+    function renderOriginalTable(dataArray) {
+        const headO = document.getElementById('sec-head-original');
+        const bodyO = document.getElementById('sec-body-original');
+        headO.innerHTML = '';
+        bodyO.innerHTML = '';
+        if (!dataArray || dataArray.length === 0) {
+            headO.innerHTML = '<th>Sin datos</th>';
+            return;
+        }
         const keys = Object.keys(dataArray[0]);
-        keys.forEach(k => headM.innerHTML += `<th>${k}</th>`);
+        keys.forEach(k => headO.innerHTML += `<th>${k}</th>`);
         dataArray.forEach(row => {
             let tr = '<tr>';
-            keys.forEach(k => tr += `<td>${row[k]}</td>`);
+            keys.forEach(k => tr += `<td>${row[k] !== null && row[k] !== undefined ? String(row[k]).replace(/</g,'&lt;') : ''}</td>`);
+            tr += '</tr>';
+            bodyO.innerHTML += tr;
+        });
+    }
+
+    function renderMaskedTable(maskedArray) {
+        const headM = document.getElementById('sec-head-masked');
+        const bodyM = document.getElementById('sec-body-masked');
+        headM.innerHTML = '';
+        bodyM.innerHTML = '';
+        if (!maskedArray || maskedArray.length === 0) {
+            headM.innerHTML = '<th>Sin datos</th>';
+            return;
+        }
+        const keys = Object.keys(maskedArray[0]);
+        keys.forEach(k => headM.innerHTML += `<th>${k}</th>`);
+        maskedArray.forEach(row => {
+            let tr = '<tr>';
+            keys.forEach(k => tr += `<td>${row[k] !== null && row[k] !== undefined ? String(row[k]).replace(/</g,'&lt;') : ''}</td>`);
             tr += '</tr>';
             bodyM.innerHTML += tr;
         });
-
-        // To get original, we could do a normal query, but for simplicity let's just show the masked in the Masked table.
-        // Update encryption panel if encryption was used
-        document.getElementById('enc-status').textContent = "Procesado con " + document.getElementById('sec-algo').value;
     }
 
-    async function applyMasking() { await performSecurityAction('/api/v1/execute_test', {}); }
-    async function encryptData() { 
-        const res = await performSecurityAction('/encrypt', {}, false); 
-        if(res) {
-            document.getElementById('enc-status').textContent = 'ENCRIPTADO';
-            document.getElementById('enc-after').textContent = 'gAAAAAB... (Hash)';
-        }
-    }
-    async function decryptData() { 
-        const res = await performSecurityAction('/decrypt', {}, false); 
-        if(res) {
-            document.getElementById('enc-status').textContent = 'DESENCRIPTADO';
-            document.getElementById('enc-after').textContent = 'Texto Original';
-        }
-    }
-    async function restoreData() { 
+    // Legacy alias
+    function renderSecurityTables(arr) { renderMaskedTable(arr); }
+
+    async function applyMasking() {
         const cid = document.getElementById('sec-conn-select').value;
         const table = document.getElementById('sec-table-select').value;
-        await fetch('/api/v1/governance/restore', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({connection_id: cid, tabla: table}) });
-        document.getElementById('sec-body-masked').innerHTML = '';
-        document.getElementById('enc-status').textContent = 'Restaurado';
+        const algo = document.getElementById('sec-algo').value;
+        if (!cid || !table) { alert('Selecciona una conexi&#243;n y una tabla primero.'); return; }
+        const checkedCols = Array.from(document.querySelectorAll('.col-chk:checked')).map(cb => cb.value);
+        if (checkedCols.length === 0) { alert('Selecciona al menos una columna para enmascarar.'); return; }
+        document.getElementById('flow-algo').textContent = algo.toUpperCase();
+        // Show loading in both panels
+        const ho = document.getElementById('sec-head-original');
+        const bo = document.getElementById('sec-body-original');
+        const hm = document.getElementById('sec-head-masked');
+        const bm = document.getElementById('sec-body-masked');
+        if(ho) ho.innerHTML = '<th style="color:#38bdf8">Cargando...</th>';
+        if(bo) bo.innerHTML = '<tr><td style="color:#64748b;padding:8px">&#8635; Obteniendo datos originales...</td></tr>';
+        if(hm) hm.innerHTML = '<th style="color:#f59e0b">Procesando...</th>';
+        if(bm) bm.innerHTML = '<tr><td style="color:#64748b;padding:8px">&#8635; Aplicando enmascaramiento...</td></tr>';
+        const reglas = {};
+        checkedCols.forEach(c => reglas[c] = algo);
+        try {
+            const [resOrig, resMask] = await Promise.all([
+                fetch('/api/v1/execute_test', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ connection_id: cid, tabla: table, reglas: {} })
+                }),
+                fetch('/api/v1/execute_test', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ connection_id: cid, tabla: table, reglas: reglas })
+                })
+            ]);
+            if (resOrig.ok) {
+                const d = await resOrig.json();
+                (d.data||[]).length ? renderOriginalTable(d.data) : _setTableError('sec-head-original','sec-body-original','Tabla vac&#237;a.');
+            } else {
+                const e = await resOrig.json().catch(()=>({}));
+                _setTableError('sec-head-original','sec-body-original', e.detail||`Error ${resOrig.status}`);
+            }
+            if (resMask.ok) {
+                const d = await resMask.json();
+                if ((d.data||[]).length) {
+                    renderMaskedTable(d.data);
+                    document.getElementById('enc-status').textContent = 'Procesado con ' + algo;
+                } else {
+                    _setTableError('sec-head-masked','sec-body-masked','Sin datos enmascarados.');
+                }
+            } else {
+                const e = await resMask.json().catch(()=>({}));
+                _setTableError('sec-head-masked','sec-body-masked', e.detail||`Error ${resMask.status}`);
+            }
+        } catch(e) {
+            _setTableError('sec-head-original','sec-body-original','Error de red: '+e.message);
+            _setTableError('sec-head-masked','sec-body-masked','Error de red: '+e.message);
+        }
+    }
+
+    async function encryptData() {
+        const cid = document.getElementById('sec-conn-select').value;
+        const table = document.getElementById('sec-table-select').value;
+        if (!cid || !table) { alert('Selecciona una conexi&#243;n y tabla.'); return; }
+        const checkedCols = Array.from(document.querySelectorAll('.col-chk:checked')).map(cb => cb.value);
+        if (checkedCols.length === 0) { alert('Selecciona al menos una columna para encriptar.'); return; }
+        const ho = document.getElementById('sec-head-original');
+        if(ho) ho.innerHTML = '<th style="color:#10b981">Encriptando...</th>';
+        try {
+            const res = await fetch('/encrypt', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ connection_id: cid, tabla: table, table: table, column: checkedCols[0], columna: checkedCols[0] })
+            });
+            if (res.ok) {
+                document.getElementById('enc-status').textContent = 'ENCRIPTADO';
+                document.getElementById('enc-before').textContent = checkedCols[0];
+                document.getElementById('enc-after').textContent = 'gAAAAAB... (Fernet AES-128)';
+                await loadOriginalData();
+            } else {
+                const err = await res.json().catch(()=>({}));
+                _setTableError('sec-head-original','sec-body-original','Error al encriptar: '+(err.detail||res.status));
+            }
+        } catch(e) {
+            _setTableError('sec-head-original','sec-body-original','Error de red: '+e.message);
+        }
+    }
+
+    async function decryptData() {
+        const cid = document.getElementById('sec-conn-select').value;
+        const table = document.getElementById('sec-table-select').value;
+        if (!cid || !table) { alert('Selecciona una conexi&#243;n y tabla.'); return; }
+        const checkedCols = Array.from(document.querySelectorAll('.col-chk:checked')).map(cb => cb.value);
+        if (checkedCols.length === 0) { alert('Selecciona al menos una columna para desencriptar.'); return; }
+        const ho = document.getElementById('sec-head-original');
+        if(ho) ho.innerHTML = '<th style="color:#f59e0b">Desencriptando...</th>';
+        try {
+            const res = await fetch('/decrypt', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ connection_id: cid, tabla: table, table: table, column: checkedCols[0], columna: checkedCols[0] })
+            });
+            if (res.ok) {
+                document.getElementById('enc-status').textContent = 'DESENCRIPTADO';
+                document.getElementById('enc-before').textContent = 'gAAAAAB...';
+                document.getElementById('enc-after').textContent = 'Texto Original';
+                await loadOriginalData();
+            } else {
+                const err = await res.json().catch(()=>({}));
+                _setTableError('sec-head-original','sec-body-original','Error al desencriptar: '+(err.detail||res.status));
+            }
+        } catch(e) {
+            _setTableError('sec-head-original','sec-body-original','Error de red: '+e.message);
+        }
+    }
+
+    async function restoreData() {
+        const cid = document.getElementById('sec-conn-select').value;
+        const table = document.getElementById('sec-table-select').value;
+        if (!cid || !table) { alert('Selecciona una conexi&#243;n y tabla.'); return; }
+        const hm = document.getElementById('sec-head-masked');
+        const bm = document.getElementById('sec-body-masked');
+        if(hm) hm.innerHTML = '<th style="color:#f59e0b">Restaurando...</th>';
+        if(bm) bm.innerHTML = '<tr><td style="color:#64748b;padding:8px">&#8635; Restaurando datos originales...</td></tr>';
+        try {
+            await fetch('/api/v1/governance/restore', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ connection_id: cid, tabla: table })
+            });
+        } catch(e) { /* Ignore errors from restore — still clear UI */ }
+        if(hm) hm.innerHTML = '<th style="color:#64748b">Tabla Procesada</th>';
+        if(bm) bm.innerHTML = '<tr><td style="color:#64748b;font-size:12px;padding:8px">Vista restaurada &#10003; &#8212; aplica enmascaramiento de nuevo para comparar.</td></tr>';
+        document.getElementById('enc-status').textContent = 'Restaurado ✓';
+        await loadOriginalData();
     }
 
 

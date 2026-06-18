@@ -38,7 +38,8 @@ class PostgresDB(BaseDeDatos):
             port=int(self.credenciales.get('port', 5432)),
             user=self.credenciales.get('user'),
             password=self.credenciales.get('password'),
-            dbname=self.credenciales.get('database')
+            dbname=self.credenciales.get('database'),
+            cursor_factory=RealDictCursor
         )
 
     def obtener_esquema(self) -> Dict[str, List[str]]:
@@ -56,29 +57,33 @@ class PostgresDB(BaseDeDatos):
             esquema[t_name].append(c_name)
         return {"tablas": esquema}
 
-    def ejecutar_consulta(self, query_o_filtro: str, params: Any = None, **kwargs) -> List[Dict[str, Any]]:
+    def ejecutar_consulta(self, query_o_filtro: str, **kwargs) -> List[Dict[str, Any]]:
         with self.conectar() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute(query_o_filtro, params)
+            with conn.cursor() as cursor:
+                cursor.execute(query_o_filtro)
                 if cursor.description: return [dict(row) for row in cursor.fetchall()]
                 return []
 
 class MySQLDB(BaseDeDatos):
     def conectar(self):
-        return pymysql.connect(
-            host=self.credenciales.get('host'),
-            port=int(self.credenciales.get('port', 3306)),
-            user=self.credenciales.get('user'),
-            password=self.credenciales.get('password'),
-            database=self.credenciales.get('database'),
-            cursorclass=pymysql.cursors.DictCursor
-        )
+        try:
+            return pymysql.connect(
+                host=self.credenciales.get('host'),
+                port=int(self.credenciales.get('port', 3306)),
+                user=self.credenciales.get('user'),
+                password=self.credenciales.get('password'),
+                database=self.credenciales.get('database'),
+                cursorclass=pymysql.cursors.DictCursor,
+                connect_timeout=5
+            )
+        except pymysql.MySQLError as e:
+            raise ConnectionError(f"MySQL connection error: {e}")
 
     def obtener_esquema(self) -> Dict[str, List[str]]:
         esquema = {}
         db = self.credenciales.get('database')
-        query = f"SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = %s"
-        resultados = self.ejecutar_consulta(query, db)
+        query = f"SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = '{db}'"
+        resultados = self.ejecutar_consulta(query)
         for fila in resultados:
             t_name = fila.get('table_name') or fila.get('TABLE_NAME')
             c_name = fila.get('column_name') or fila.get('COLUMN_NAME')
@@ -86,11 +91,11 @@ class MySQLDB(BaseDeDatos):
             esquema[t_name].append(c_name)
         return {"tablas": esquema}
 
-    def ejecutar_consulta(self, query_o_filtro: str, params: Any = None, **kwargs) -> List[Dict[str, Any]]:
+    def ejecutar_consulta(self, query_o_filtro: str, **kwargs) -> List[Dict[str, Any]]:
         conexion = self.conectar()
         try:
             with conexion.cursor() as cursor:
-                cursor.execute(query_o_filtro, params)
+                cursor.execute(query_o_filtro)
                 if cursor.description: return cursor.fetchall()
                 conexion.commit()
                 return []
@@ -113,28 +118,32 @@ class SQLiteDB(BaseDeDatos):
             esquema[t_name] = [c['name'] for c in cols]
         return {"tablas": esquema}
 
-    def ejecutar_consulta(self, query_o_filtro: str, params: Any = None, **kwargs) -> List[Dict[str, Any]]:
+    def ejecutar_consulta(self, query_o_filtro: str, **kwargs) -> List[Dict[str, Any]]:
         with self.conectar() as conn:
             cursor = conn.cursor()
-            cursor.execute(query_o_filtro, params)
+            cursor.execute(query_o_filtro)
             if cursor.description: return [dict(row) for row in cursor.fetchall()]
             conn.commit()
             return []
 
 class SQLServerDB(BaseDeDatos):
     def conectar(self):
-        return pymssql.connect(
-            server=self.credenciales.get('host'),
-            port=str(self.credenciales.get('port', 1433)),
-            user=self.credenciales.get('user'),
-            password=self.credenciales.get('password'),
-            database=self.credenciales.get('database'),
-            as_dict=True
-        )
+        try:
+            return pymssql.connect(
+                server=self.credenciales.get('host'),
+                port=str(self.credenciales.get('port', 1433)),
+                user=self.credenciales.get('user'),
+                password=self.credenciales.get('password'),
+                database=self.credenciales.get('database'),
+                as_dict=True,
+                timeout=5
+            )
+        except pymssql._mssql.MssqlException as e:
+            raise ConnectionError(f"SQL Server connection error: {e}")
 
     def obtener_esquema(self) -> Dict[str, List[str]]:
         esquema = {}
-        query = "SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'dbo'"
+        query = "SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS"
         resultados = self.ejecutar_consulta(query)
         for fila in resultados:
             t_name = fila['TABLE_NAME']
@@ -143,11 +152,11 @@ class SQLServerDB(BaseDeDatos):
             esquema[t_name].append(c_name)
         return {"tablas": esquema}
 
-    def ejecutar_consulta(self, query_o_filtro: str, params: Any = None, **kwargs) -> List[Dict[str, Any]]:
+    def ejecutar_consulta(self, query_o_filtro: str, **kwargs) -> List[Dict[str, Any]]:
         conexion = self.conectar()
         try:
             with conexion.cursor() as cursor:
-                cursor.execute(query_o_filtro, params)
+                cursor.execute(query_o_filtro)
                 if cursor.description: return cursor.fetchall()
                 conexion.commit()
                 return []
@@ -246,11 +255,8 @@ class RedisDB(BaseDeDatos):
 
 class Neo4jDB(BaseDeDatos):
     def conectar(self):
-        host = self.credenciales.get('host', 'bolt://localhost:7687')
-        if not host.startswith(('bolt://', 'neo4j://')):
-            host = f"bolt://{host}"
         return GraphDatabase.driver(
-            host, 
+            self.credenciales.get('host'), 
             auth=(self.credenciales.get('user'), self.credenciales.get('password'))
         )
 
@@ -306,7 +312,10 @@ def _es_motor_sql(motor: BaseDeDatos) -> bool:
 def _quote_identifier_sql(motor: BaseDeDatos, nombre: str) -> str:
     if isinstance(motor, SQLServerDB):
         return f"[{nombre}]"
+    if isinstance(motor, MySQLDB):
+        return f"`{nombre}`"
     return f'"{nombre}"'
+
 
 
 def obtener_filas_tabla(motor: BaseDeDatos, tabla: str, limite: int = 100) -> List[Dict[str, Any]]:

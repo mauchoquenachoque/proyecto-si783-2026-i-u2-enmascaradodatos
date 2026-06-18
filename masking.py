@@ -56,8 +56,8 @@ def aplicar_enmascaramiento(datos: List[Dict[str, Any]], reglas: Dict[str, str])
     for fila in datos:
         nueva_fila = fila.copy()
         for columna, algoritmo in reglas.items():
-            if columna in nueva_fila and isinstance(nueva_fila[columna], str):
-                valor = nueva_fila[columna]
+            if columna in nueva_fila and nueva_fila[columna] is not None:
+                valor = str(nueva_fila[columna])
 
                 # ── 1. REDACCIÓN DESTRUCTIVA ──────────────────────────────
                 if algoritmo == "redaccion":

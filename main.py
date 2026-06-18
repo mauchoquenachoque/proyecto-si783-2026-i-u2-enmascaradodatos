@@ -5,6 +5,7 @@ Autenticación: email + bcrypt (local) + Google OAuth2.
 
 import os
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 import httpx
@@ -18,6 +19,7 @@ from auth import (SESIONES_ACTIVAS, agregar_conexion, crear_token_sesion,
                   eliminar_conexion, obtener_conexion, obtener_sesion_actual,
                   revocar_token)
 from config import settings
+from database_health import check_database_health_batch
 from database_manager import DatabaseFactory
 from db_usuarios import (autenticar_usuario, init_db, registrar_usuario)
 from oauth_google import oauth, get_google_user_info
@@ -26,7 +28,7 @@ load_dotenv()
 API_SERVICE_URL = os.getenv("API_SERVICE_URL", "http://localhost:8000")
 MASKING_SERVICE_URL = os.getenv("MASKING_SERVICE_URL", "http://localhost:8001")
 MONITOR_SERVICE_URL = os.getenv("MONITOR_SERVICE_URL", "http://localhost:8002")
-MOTORES_SDM_DISPONIBLES = ["sqlite", "postgres", "sqlserver", "mongodb", "neo4j"]
+MOTORES_SDM_DISPONIBLES = ["sqlite", "postgres", "sqlserver", "mongodb"]
 # Render sirve HTTPS; las cookies deben marcarse secure en produccion
 _COOKIE_SECURE = os.getenv("RENDER") == "true"
 
@@ -73,6 +75,45 @@ app = FastAPI(
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET_KEY", os.urandom(32).hex()))
 
 os.makedirs("static", exist_ok=True)
+
+
+# Global exception handlers to save logs in monitor service
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    error_payload = {
+        "service": "api",
+        "error_type": type(exc).__name__,
+        "message": str(exc),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(f"{MONITOR_SERVICE_URL}/errors", json=error_payload, timeout=2.0)
+    except Exception:
+        pass
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal Server Error: {str(exc)}"}
+    )
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    if exc.status_code >= 400:
+        error_payload = {
+            "service": "api",
+            "error_type": "HTTPException",
+            "message": f"Status {exc.status_code}: {exc.detail}",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(f"{MONITOR_SERVICE_URL}/errors", json=error_payload, timeout=2.0)
+        except Exception:
+            pass
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail}
+    )
 
 
 @app.get("/health", tags=["Health"])
@@ -498,18 +539,29 @@ async def monitor_services():
 
 @app.get("/api/v1/monitor/databases", tags=["Monitor"])
 async def monitor_databases(request: Request, sesion: Dict[str, Any] = Depends(obtener_sesion_actual)):
+    """Verifica la salud de todas las conexiones activas en sesión.
+    Primero intenta vía monitor_service; si está caído, hace el check directamente."""
     conexiones = list((sesion.get("conexiones") or {}).values())
-    async with httpx.AsyncClient() as client:
-        try:
+
+    # Intentar via monitor_service
+    try:
+        async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{MONITOR_SERVICE_URL}/db-health",
                 json={"connections": conexiones},
-                timeout=30.0,
+                timeout=15.0,
             )
             response.raise_for_status()
             return response.json()
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Fallo comunicando con Monitor Service: {str(e)}")
+    except Exception:
+        pass  # Monitor service no disponible, usamos fallback directo
+
+    # Fallback directo: check sin depender del monitor_service
+    try:
+        results = check_database_health_batch(conexiones)
+        return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al verificar salud de bases de datos: {str(e)}")
 
 
 @app.get("/api/v1/monitor/algorithms", tags=["Monitor"])

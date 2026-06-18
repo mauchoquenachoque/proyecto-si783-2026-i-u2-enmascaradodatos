@@ -191,6 +191,19 @@ async def save_service_health(payload: Dict[str, Any] = Body(default={})):
                 timestamp,
             ),
         )
+        if result.get("status") == "DOWN":
+            cursor.execute(
+                """
+                INSERT INTO system_errors (service, error_type, message, timestamp)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    result.get("service"),
+                    "SERVICE_DOWN",
+                    f"El servicio {result.get('service')} no responde o retorno error: {result.get('error', 'Desconocido')}",
+                    timestamp,
+                ),
+            )
     conn.commit()
     conn.close()
     return results
@@ -215,6 +228,19 @@ async def save_database_health(payload: Dict[str, Any] = Body(...)):
                 result.get("timestamp"),
             ),
         )
+        if result.get("status") == "DOWN":
+            cursor.execute(
+                """
+                INSERT INTO system_errors (service, error_type, message, timestamp)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    f"database_{result.get('engine')}",
+                    "DATABASE_DOWN",
+                    f"La base de datos {result.get('engine')} esta caida: {result.get('error', 'Desconocido')}",
+                    result.get("timestamp"),
+                ),
+            )
     conn.commit()
     conn.close()
     return results
@@ -389,6 +415,40 @@ async def save_error(payload: Dict[str, Any] = Body(...)):
             payload.get("service"),
             payload.get("error_type"),
             payload.get("message"),
+            timestamp,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
+
+@app.post("/metrics")
+async def save_metrics(payload: Dict[str, Any] = Body(...)):
+    timestamp = payload.get("timestamp") or datetime.now(timezone.utc).isoformat()
+    conn = _get_conn()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO metrics (
+            motor_utilizado, masking_mode, tiempo_normal_ms, tiempo_masked_ms, tiempo_encrypted_ms,
+            latency_delta_ms, cpu_overhead, tiempo_bd_ms, tiempo_mask_ms, overhead_total_ms,
+            filas_procesadas, timestamp
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            payload.get("motor_utilizado"),
+            payload.get("masking_mode"),
+            payload.get("tiempo_normal_ms"),
+            payload.get("tiempo_masked_ms"),
+            payload.get("tiempo_encrypted_ms"),
+            payload.get("latency_delta_ms"),
+            payload.get("cpu_overhead"),
+            payload.get("tiempo_bd_ms"),
+            payload.get("tiempo_mask_ms"),
+            payload.get("overhead_total_ms"),
+            payload.get("filas_procesadas"),
             timestamp,
         ),
     )
