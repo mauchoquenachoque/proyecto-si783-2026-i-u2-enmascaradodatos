@@ -38,8 +38,7 @@ class PostgresDB(BaseDeDatos):
             port=int(self.credenciales.get('port', 5432)),
             user=self.credenciales.get('user'),
             password=self.credenciales.get('password'),
-            dbname=self.credenciales.get('database'),
-            cursor_factory=RealDictCursor
+            dbname=self.credenciales.get('database')
         )
 
     def obtener_esquema(self) -> Dict[str, List[str]]:
@@ -59,7 +58,7 @@ class PostgresDB(BaseDeDatos):
 
     def ejecutar_consulta(self, query_o_filtro: str, params: Any = None, **kwargs) -> List[Dict[str, Any]]:
         with self.conectar() as conn:
-            with conn.cursor() as cursor:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute(query_o_filtro, params)
                 if cursor.description: return [dict(row) for row in cursor.fetchall()]
                 return []
@@ -129,7 +128,8 @@ class SQLServerDB(BaseDeDatos):
             port=str(self.credenciales.get('port', 1433)),
             user=self.credenciales.get('user'),
             password=self.credenciales.get('password'),
-            database=self.credenciales.get('database')
+            database=self.credenciales.get('database'),
+            as_dict=True
         )
 
     def obtener_esquema(self) -> Dict[str, List[str]]:
@@ -146,7 +146,7 @@ class SQLServerDB(BaseDeDatos):
     def ejecutar_consulta(self, query_o_filtro: str, params: Any = None, **kwargs) -> List[Dict[str, Any]]:
         conexion = self.conectar()
         try:
-            with conexion.cursor(as_dict=True) as cursor:
+            with conexion.cursor() as cursor:
                 cursor.execute(query_o_filtro, params)
                 if cursor.description: return cursor.fetchall()
                 conexion.commit()
@@ -246,8 +246,11 @@ class RedisDB(BaseDeDatos):
 
 class Neo4jDB(BaseDeDatos):
     def conectar(self):
+        host = self.credenciales.get('host', 'bolt://localhost:7687')
+        if not host.startswith(('bolt://', 'neo4j://')):
+            host = f"bolt://{host}"
         return GraphDatabase.driver(
-            self.credenciales.get('host'), 
+            host, 
             auth=(self.credenciales.get('user'), self.credenciales.get('password'))
         )
 
