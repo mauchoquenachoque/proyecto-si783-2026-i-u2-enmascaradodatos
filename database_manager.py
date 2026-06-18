@@ -40,6 +40,7 @@ class PostgresDB(BaseDeDatos):
             password=self.credenciales.get('password'),
             dbname=self.credenciales.get('database'),
             cursor_factory=RealDictCursor
+
         )
 
     def obtener_esquema(self) -> Dict[str, List[str]]:
@@ -61,6 +62,7 @@ class PostgresDB(BaseDeDatos):
         with self.conectar() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(query_o_filtro)
+
                 if cursor.description: return [dict(row) for row in cursor.fetchall()]
                 return []
 
@@ -78,8 +80,11 @@ class MySQLDB(BaseDeDatos):
     def obtener_esquema(self) -> Dict[str, List[str]]:
         esquema = {}
         db = self.credenciales.get('database')
+
         query = f"SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = '{db}'"
         resultados = self.ejecutar_consulta(query)
+
+
         for fila in resultados:
             t_name = fila.get('table_name') or fila.get('TABLE_NAME')
             c_name = fila.get('column_name') or fila.get('COLUMN_NAME')
@@ -92,6 +97,7 @@ class MySQLDB(BaseDeDatos):
         try:
             with conexion.cursor() as cursor:
                 cursor.execute(query_o_filtro)
+
                 if cursor.description: return cursor.fetchall()
                 conexion.commit()
                 return []
@@ -114,10 +120,12 @@ class SQLiteDB(BaseDeDatos):
             esquema[t_name] = [c['name'] for c in cols]
         return {"tablas": esquema}
 
+
     def ejecutar_consulta(self, query_o_filtro: str, **kwargs) -> List[Dict[str, Any]]:
         with self.conectar() as conn:
             cursor = conn.cursor()
             cursor.execute(query_o_filtro)
+
             if cursor.description: return [dict(row) for row in cursor.fetchall()]
             conn.commit()
             return []
@@ -135,7 +143,9 @@ class SQLServerDB(BaseDeDatos):
 
     def obtener_esquema(self) -> Dict[str, List[str]]:
         esquema = {}
+
         query = "SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS"
+
         resultados = self.ejecutar_consulta(query)
         for fila in resultados:
             t_name = fila['TABLE_NAME']
@@ -149,6 +159,7 @@ class SQLServerDB(BaseDeDatos):
         try:
             with conexion.cursor() as cursor:
                 cursor.execute(query_o_filtro)
+
                 if cursor.description: return cursor.fetchall()
                 conexion.commit()
                 return []
@@ -249,6 +260,7 @@ class Neo4jDB(BaseDeDatos):
     def conectar(self):
         return GraphDatabase.driver(
             self.credenciales.get('host'), 
+
             auth=(self.credenciales.get('user'), self.credenciales.get('password'))
         )
 
