@@ -150,81 +150,85 @@ def _descifrar_fila(fila: Dict, columnas: List[str]) -> List[Optional[str]]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _sqlite_preflight(motor, tabla: str) -> str:
-    backup = tabla + BACKUP_SUFFIX
+    tabla_raw = tabla + "__raw"
     existe = motor.ejecutar_consulta(
-        f"SELECT name FROM sqlite_master WHERE type='table' AND name='{backup}'"
+        f"SELECT name FROM sqlite_master WHERE type='table' AND name='{tabla_raw}'"
     )
     if existe:
         raise ValueError(
-            f"Pre-flight FAIL: El backup '{backup}' ya existe en SQLite. "
+            f"Pre-flight FAIL: La tabla base '{tabla_raw}' ya existe en SQLite. "
             "La protección podría estar activa. Ejecuta 'Restaurar' primero."
         )
-    return backup
+    return tabla_raw
 
+def _sqlite_generar_select_vista(motor, tabla_raw: str, reglas: Dict[str, str]) -> str:
+    esquema = motor.obtener_esquema().get("tablas", {})
+    columnas = esquema.get(tabla_raw, [])
+    if not columnas:
+        # Fallback to get columns
+        cols_info = motor.ejecutar_consulta(f"PRAGMA table_info({tabla_raw})")
+        columnas = [c['name'] for c in cols_info]
+        
+    select_parts = []
+    for col in columnas:
+        if col in reglas:
+            algoritmo = reglas[col]
+            if algoritmo == "redaccion":
+                select_parts.append(f"'***' AS {col}")
+            elif algoritmo == "hashing":
+                # SQLite no tiene hash nativo por defecto sin extensiones, usamos un fallback simple
+                select_parts.append(f"hex(randomblob(8)) AS {col}")
+            else:
+                select_parts.append(f"'[MASKED]' AS {col}")
+        else:
+            select_parts.append(col)
+            
+    return f"SELECT {', '.join(select_parts)} FROM {tabla_raw}"
 
 def _sqlite_proteger(motor, tabla: str, reglas: Dict[str, str], connection_id: str) -> Dict[str, Any]:
-    backup = _sqlite_preflight(motor, tabla)
-
-    datos = motor.ejecutar_consulta(f"SELECT * FROM {tabla}")
-    if not datos:
-        raise ValueError(f"La tabla '{tabla}' está vacía. No hay nada que proteger.")
-
-    cols = list(datos[0].keys())
-    ph = ", ".join(["?" for _ in cols])
-    cols_str = ", ".join(cols)
-
+    tabla_raw = _sqlite_preflight(motor, tabla)
     conn = motor.conectar()
     cur = conn.cursor()
+    
+    try:
+        # 1. Renombrar tabla original
+        cur.execute(f"ALTER TABLE {tabla} RENAME TO {tabla_raw}")
+        
+        # 2. Crear vista DDM
+        sql_select = _sqlite_generar_select_vista(motor, tabla_raw, reglas)
+        cur.execute(f"CREATE VIEW {tabla} AS {sql_select}")
+        
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
 
-    # 1. Crear tabla de backup con todos los campos como TEXT
-    col_defs = ", ".join([f"{c} TEXT" for c in cols])
-    cur.execute(f"CREATE TABLE IF NOT EXISTS {backup} ({col_defs})")
-
-    # 2. Insertar filas cifradas en el backup
-    for fila in datos:
-        cur.execute(f"INSERT INTO {backup} ({cols_str}) VALUES ({ph})", _cifrar_fila(fila, cols))
-
-    # 3. Enmascarar y sobrescribir la tabla original
-    enmascarados = aplicar_enmascaramiento(datos, reglas)
-    cur.execute(f"DELETE FROM {tabla}")
-    for fila in enmascarados:
-        cur.execute(
-            f"INSERT INTO {tabla} ({cols_str}) VALUES ({ph})",
-            [str(fila.get(c, "")) for c in cols]
-        )
-
-    conn.commit()
-    conn.close()
     _registrar_estado(connection_id, tabla, "ACTIVA")
-    return {"filas_protegidas": len(enmascarados), "backup_tabla": backup}
-
+    return {"filas_protegidas": "N/A (Vista DDM creada)", "backup_tabla": tabla_raw}
 
 def _sqlite_restaurar(motor, tabla: str, connection_id: str) -> Dict[str, Any]:
-    backup = tabla + BACKUP_SUFFIX
-
+    tabla_raw = tabla + "__raw"
     if not motor.ejecutar_consulta(
-        f"SELECT name FROM sqlite_master WHERE type='table' AND name='{backup}'"
+        f"SELECT name FROM sqlite_master WHERE type='table' AND name='{tabla_raw}'"
     ):
-        raise ValueError(f"Backup '{backup}' no encontrado en SQLite. Nada que restaurar.")
-
-    cifrados = motor.ejecutar_consulta(f"SELECT * FROM {backup}")
-    if not cifrados:
-        raise ValueError("El backup está vacío.")
-
-    cols = list(cifrados[0].keys())
-    ph = ", ".join(["?" for _ in cols])
+        raise ValueError(f"Tabla base '{tabla_raw}' no encontrada en SQLite. Nada que restaurar.")
 
     conn = motor.conectar()
     cur = conn.cursor()
-    cur.execute(f"DELETE FROM {tabla}")
-    for fila in cifrados:
-        cur.execute(f"INSERT INTO {tabla} ({', '.join(cols)}) VALUES ({ph})", _descifrar_fila(fila, cols))
-    cur.execute(f"DROP TABLE IF EXISTS {backup}")
-    conn.commit()
-    conn.close()
+    try:
+        cur.execute(f"DROP VIEW IF EXISTS {tabla}")
+        cur.execute(f"ALTER TABLE {tabla_raw} RENAME TO {tabla}")
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
 
     _registrar_estado(connection_id, tabla, "INACTIVA")
-    return {"filas_restauradas": len(cifrados)}
+    return {"filas_restauradas": "N/A (Vista eliminada)"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -232,154 +236,167 @@ def _sqlite_restaurar(motor, tabla: str, connection_id: str) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _mysql_preflight(motor, tabla: str) -> str:
-    backup = tabla + BACKUP_SUFFIX
-    res = motor.ejecutar_consulta(f"SHOW TABLES LIKE '{backup}'")
+    tabla_raw = tabla + "__raw"
+    res = motor.ejecutar_consulta(f"SHOW TABLES LIKE '{tabla_raw}'")
     if res:
         raise ValueError(
-            f"Pre-flight FAIL: La tabla '{backup}' ya existe en MySQL. "
+            f"Pre-flight FAIL: La tabla base '{tabla_raw}' ya existe en MySQL. "
             "Ejecuta 'Restaurar' antes de volver a proteger."
         )
-    return backup
+    return tabla_raw
 
+def _mysql_generar_select_vista(motor, tabla_raw: str, reglas: Dict[str, str]) -> str:
+    esquema = motor.obtener_esquema().get("tablas", {})
+    columnas = esquema.get(tabla_raw, [])
+    if not columnas:
+        # Fallback to get columns from original table name since tabla_raw might not exist yet during planning
+        columnas = esquema.get(tabla_raw.replace("__raw", ""), [])
+        if not columnas:
+            res = motor.ejecutar_consulta(f"SHOW COLUMNS FROM `{tabla_raw.replace('__raw', '')}`")
+            columnas = [r.get('Field') or r.get('FIELD') for r in res]
+
+    select_parts = []
+    for col in columnas:
+        if col in reglas:
+            algoritmo = reglas[col]
+            if algoritmo == "redaccion":
+                select_parts.append(f"'***' AS `{col}`")
+            elif algoritmo == "hashing":
+                select_parts.append(f"SUBSTRING(SHA2(`{col}`, 256), 1, 16) AS `{col}`")
+            else:
+                select_parts.append(f"'[MASKED]' AS `{col}`")
+        else:
+            select_parts.append(f"`{col}`")
+            
+    return f"SELECT {', '.join(select_parts)} FROM `{tabla_raw}`"
 
 def _mysql_proteger(motor, tabla: str, reglas: Dict[str, str], connection_id: str) -> Dict[str, Any]:
-    backup = _mysql_preflight(motor, tabla)
-
-    datos = motor.ejecutar_consulta(f"SELECT * FROM `{tabla}` LIMIT 50000")
-    if not datos:
-        raise ValueError(f"La tabla '{tabla}' está vacía.")
-
-    cols = list(datos[0].keys())
-    cols_q = ", ".join([f"`{c}`" for c in cols])
-    ph = ", ".join(["%s" for _ in cols])
-
+    tabla_raw = _mysql_preflight(motor, tabla)
     conn = motor.conectar()
     cur = conn.cursor()
+    
+    try:
+        # 1. Renombrar tabla original
+        cur.execute(f"RENAME TABLE `{tabla}` TO `{tabla_raw}`")
+        
+        # 2. Crear vista DDM
+        sql_select = _mysql_generar_select_vista(motor, tabla_raw, reglas)
+        cur.execute(f"CREATE VIEW `{tabla}` AS {sql_select}")
+        
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except: pass
+        raise e
+    finally:
+        conn.close()
 
-    # 1. Crear tabla de backup (todos los campos TEXT para almacenar tokens Fernet)
-    col_defs = ", ".join([f"`{c}` TEXT" for c in cols])
-    cur.execute(f"CREATE TABLE `{backup}` ({col_defs})")
-
-    # 2. Insertar filas cifradas en el backup
-    for fila in datos:
-        cur.execute(f"INSERT INTO `{backup}` ({cols_q}) VALUES ({ph})", _cifrar_fila(fila, cols))
-
-    # 3. Enmascarar y sobrescribir la tabla original
-    enmascarados = aplicar_enmascaramiento(datos, reglas)
-    cur.execute(f"DELETE FROM `{tabla}`")
-    for fila in enmascarados:
-        cur.execute(
-            f"INSERT INTO `{tabla}` ({cols_q}) VALUES ({ph})",
-            [str(fila.get(c, "")) for c in cols]
-        )
-
-    conn.commit()
-    conn.close()
     _registrar_estado(connection_id, tabla, "ACTIVA")
-    return {"filas_protegidas": len(enmascarados), "backup_tabla": backup}
+    return {"filas_protegidas": "N/A (Vista DDM creada)", "backup_tabla": tabla_raw}
 
 
 def _mysql_restaurar(motor, tabla: str, connection_id: str) -> Dict[str, Any]:
-    backup = tabla + BACKUP_SUFFIX
-
-    res = motor.ejecutar_consulta(f"SHOW TABLES LIKE '{backup}'")
+    tabla_raw = tabla + "__raw"
+    res = motor.ejecutar_consulta(f"SHOW TABLES LIKE '{tabla_raw}'")
     if not res:
-        raise ValueError(f"Backup '{backup}' no encontrado en MySQL.")
-
-    cifrados = motor.ejecutar_consulta(f"SELECT * FROM `{backup}`")
-    if not cifrados:
-        raise ValueError("El backup está vacío.")
-
-    cols = list(cifrados[0].keys())
-    cols_q = ", ".join([f"`{c}`" for c in cols])
-    ph = ", ".join(["%s" for _ in cols])
+        raise ValueError(f"Tabla base '{tabla_raw}' no encontrada en MySQL.")
 
     conn = motor.conectar()
     cur = conn.cursor()
-    cur.execute(f"DELETE FROM `{tabla}`")
-    for fila in cifrados:
-        cur.execute(f"INSERT INTO `{tabla}` ({cols_q}) VALUES ({ph})", _descifrar_fila(fila, cols))
-    cur.execute(f"DROP TABLE `{backup}`")
-    conn.commit()
-    conn.close()
+    try:
+        cur.execute(f"DROP VIEW IF EXISTS `{tabla}`")
+        cur.execute(f"RENAME TABLE `{tabla_raw}` TO `{tabla}`")
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except: pass
+        raise e
+    finally:
+        conn.close()
 
     _registrar_estado(connection_id, tabla, "INACTIVA")
-    return {"filas_restauradas": len(cifrados)}
+    return {"filas_restauradas": "N/A (Vista eliminada)"}
 
 def _postgres_preflight(motor, tabla: str) -> str:
-    backup = tabla + BACKUP_SUFFIX
-    res = motor.ejecutar_consulta(f"SELECT to_regclass('public.\"{backup}\"') AS existe")
+    tabla_raw = tabla + "__raw"
+    res = motor.ejecutar_consulta(f"SELECT to_regclass('public.\"{tabla_raw}\"') AS existe")
     if res and res[0].get("existe"):
         raise ValueError(
-            f"Pre-flight FAIL: La tabla '{backup}' ya existe en PostgreSQL. "
+            f"Pre-flight FAIL: La tabla base '{tabla_raw}' ya existe en PostgreSQL. "
             "Ejecuta 'Restaurar' antes de volver a proteger."
         )
-    return backup
+    return tabla_raw
 
+def _postgres_generar_select_vista(motor, tabla_raw: str, reglas: Dict[str, str]) -> str:
+    esquema = motor.obtener_esquema().get("tablas", {})
+    columnas = esquema.get(tabla_raw, [])
+    if not columnas:
+        columnas = esquema.get(tabla_raw.replace("__raw", ""), [])
+        if not columnas:
+            res = motor.ejecutar_consulta(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{tabla_raw.replace('__raw', '')}'")
+            columnas = [r['column_name'] for r in res]
+
+    select_parts = []
+    for col in columnas:
+        if col in reglas:
+            algoritmo = reglas[col]
+            if algoritmo == "redaccion":
+                select_parts.append(f"'***' AS \"{col}\"")
+            elif algoritmo == "hashing":
+                # Fallback to MD5 if pgcrypto is not installed
+                select_parts.append(f"MD5(CAST(\"{col}\" AS TEXT)) AS \"{col}\"")
+            else:
+                select_parts.append(f"'[MASKED]' AS \"{col}\"")
+        else:
+            select_parts.append(f"\"{col}\"")
+            
+    return f"SELECT {', '.join(select_parts)} FROM \"{tabla_raw}\""
 
 def _postgres_proteger(motor, tabla: str, reglas: Dict[str, str], connection_id: str) -> Dict[str, Any]:
-    backup = _postgres_preflight(motor, tabla)
-
-    datos = motor.ejecutar_consulta(f'SELECT * FROM "{tabla}" LIMIT 50000')
-    if not datos:
-        raise ValueError(f"La tabla '{tabla}' está vacía.")
-
-    cols = list(datos[0].keys())
-    cols_q = ", ".join([f'"{c}"' for c in cols])      # columnas con comillas
-    ph = ", ".join(["%s" for _ in cols])
-
+    tabla_raw = _postgres_preflight(motor, tabla)
     conn = motor.conectar()
     cur = conn.cursor()
+    
+    try:
+        cur.execute(f'ALTER TABLE "{tabla}" RENAME TO "{tabla_raw}"')
+        sql_select = _postgres_generar_select_vista(motor, tabla_raw, reglas)
+        cur.execute(f'CREATE VIEW "{tabla}" AS {sql_select}')
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except: pass
+        raise e
+    finally:
+        conn.close()
 
-    # 1. Crear tabla de backup (todos los campos TEXT para almacenar tokens Fernet)
-    col_defs = ", ".join([f'"{c}" TEXT' for c in cols])
-    cur.execute(f'CREATE TABLE IF NOT EXISTS "{backup}" ({col_defs})')
-
-    # 2. Insertar filas cifradas en el backup
-    for fila in datos:
-        cur.execute(f'INSERT INTO "{backup}" ({cols_q}) VALUES ({ph})', _cifrar_fila(fila, cols))
-
-    # 3. Enmascarar y sobrescribir tabla original
-    enmascarados = aplicar_enmascaramiento(datos, reglas)
-    cur.execute(f'DELETE FROM "{tabla}"')
-    for fila in enmascarados:
-        cur.execute(
-            f'INSERT INTO "{tabla}" ({cols_q}) VALUES ({ph})',
-            [str(fila.get(c, "")) for c in cols]
-        )
-
-    conn.commit()
-    conn.close()
     _registrar_estado(connection_id, tabla, "ACTIVA")
-    return {"filas_protegidas": len(enmascarados), "backup_tabla": backup}
-
+    return {"filas_protegidas": "N/A (Vista DDM creada)", "backup_tabla": tabla_raw}
 
 def _postgres_restaurar(motor, tabla: str, connection_id: str) -> Dict[str, Any]:
-    backup = tabla + BACKUP_SUFFIX
-
-    res = motor.ejecutar_consulta(f"SELECT to_regclass('public.\"{backup}\"') AS existe")
+    tabla_raw = tabla + "__raw"
+    res = motor.ejecutar_consulta(f"SELECT to_regclass('public.\"{tabla_raw}\"') AS existe")
     if not res or not res[0].get("existe"):
-        raise ValueError(f"Backup '{backup}' no encontrado en PostgreSQL.")
-
-    cifrados = motor.ejecutar_consulta(f'SELECT * FROM "{backup}"')
-    if not cifrados:
-        raise ValueError("El backup está vacío.")
-
-    cols = list(cifrados[0].keys())
-    cols_q = ", ".join([f'"{c}"' for c in cols])
-    ph = ", ".join(["%s" for _ in cols])
+        raise ValueError(f"Tabla base '{tabla_raw}' no encontrada en PostgreSQL.")
 
     conn = motor.conectar()
     cur = conn.cursor()
-    cur.execute(f'DELETE FROM "{tabla}"')
-    for fila in cifrados:
-        cur.execute(f'INSERT INTO "{tabla}" ({cols_q}) VALUES ({ph})', _descifrar_fila(fila, cols))
-    cur.execute(f'DROP TABLE IF EXISTS "{backup}"')
-    conn.commit()
-    conn.close()
+    try:
+        cur.execute(f'DROP VIEW IF EXISTS "{tabla}"')
+        cur.execute(f'ALTER TABLE "{tabla_raw}" RENAME TO "{tabla}"')
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except: pass
+        raise e
+    finally:
+        conn.close()
 
     _registrar_estado(connection_id, tabla, "INACTIVA")
-    return {"filas_restauradas": len(cifrados)}
+    return {"filas_restauradas": "N/A (Vista eliminada)"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -387,217 +404,86 @@ def _postgres_restaurar(motor, tabla: str, connection_id: str) -> Dict[str, Any]
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _sqlserver_preflight(motor, tabla: str) -> str:
-    backup = tabla + BACKUP_SUFFIX
+    tabla_raw = tabla + "__raw"
     res = motor.ejecutar_consulta(
-        f"SELECT OBJECT_ID('{backup}', 'U') AS existe"
+        f"SELECT OBJECT_ID('{tabla_raw}', 'U') AS existe"
     )
     if res and res[0].get("existe") is not None:
         raise ValueError(
-            f"Pre-flight FAIL: La tabla '{backup}' ya existe en SQL Server. "
+            f"Pre-flight FAIL: La tabla base '{tabla_raw}' ya existe en SQL Server. "
             "Ejecuta 'Restaurar' antes de volver a proteger."
         )
-    return backup
+    return tabla_raw
 
+def _sqlserver_generar_select_vista(motor, tabla_raw: str, reglas: Dict[str, str]) -> str:
+    esquema = motor.obtener_esquema().get("tablas", {})
+    columnas = esquema.get(tabla_raw, [])
+    if not columnas:
+        columnas = esquema.get(tabla_raw.replace("__raw", ""), [])
+        if not columnas:
+            res = motor.ejecutar_consulta(f"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{tabla_raw.replace('__raw', '')}'")
+            columnas = [r['COLUMN_NAME'] for r in res]
 
-def _sqlserver_get_fk_dependientes(cur, tabla: str) -> List[str]:
-    """
-    Consulta el catálogo del sistema para obtener todas las tablas hijo
-    que tienen FK references apuntando a [tabla].
-    Devuelve una lista de nombres de tabla para poder operar con NOCHECK / CHECK.
-    """
-    cur.execute("""
-        SELECT DISTINCT
-            OBJECT_NAME(fk.parent_object_id) AS tabla_hijo
-        FROM sys.foreign_keys AS fk
-        INNER JOIN sys.tables AS t
-            ON t.object_id = fk.referenced_object_id
-        WHERE t.name = %s
-    """, (tabla,))
-    filas = cur.fetchall()
-    # pymssql devuelve tuplas; extraemos el primer elemento de cada fila
-    return [f[0] if isinstance(f, (tuple, list)) else f.get("tabla_hijo") for f in filas]
+    select_parts = []
+    for col in columnas:
+        if col in reglas:
+            algoritmo = reglas[col]
+            if algoritmo == "redaccion":
+                select_parts.append(f"'***' AS [{col}]")
+            elif algoritmo == "hashing":
+                # Fallback hashing in T-SQL
+                select_parts.append(f"SUBSTRING(CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', CAST([{col}] AS VARCHAR(MAX))), 2), 1, 16) AS [{col}]")
+            else:
+                select_parts.append(f"'[MASKED]' AS [{col}]")
+        else:
+            select_parts.append(f"[{col}]")
+            
+    return f"SELECT {', '.join(select_parts)} FROM [{tabla_raw}]"
 
 
 def _sqlserver_proteger(motor, tabla: str, reglas: Dict[str, str], connection_id: str) -> Dict[str, Any]:
-    backup = _sqlserver_preflight(motor, tabla)
-
-    datos = motor.ejecutar_consulta(f"SELECT TOP 50000 * FROM [{tabla}]")
-    if not datos:
-        raise ValueError(f"La tabla '{tabla}' está vacía.")
-
-    cols = list(datos[0].keys())
-    cols_q = ", ".join([f"[{c}]" for c in cols])
-    ph    = ", ".join(["%s" for _ in cols])  # pymssql usa %s
-
+    tabla_raw = _sqlserver_preflight(motor, tabla)
     conn = motor.conectar()
     cur  = conn.cursor()
 
-    # Descubrir tablas hijo con FK hacia [tabla]
-    tablas_hijo = _sqlserver_get_fk_dependientes(cur, tabla)
-
-    success = False
     try:
-        # ─ Deshabilitar FK constraints en tablas hijo ─────────────────────
-        for hijo in tablas_hijo:
-            cur.execute(f"ALTER TABLE [{hijo}] NOCHECK CONSTRAINT ALL")
-
-        # Habilitar IDENTITY_INSERT por si la tabla tiene columna IDENTITY
-        try:
-            cur.execute(f"SET IDENTITY_INSERT [{tabla}] ON")
-        except Exception:
-            pass
-
-        # 1. Crear tabla de backup (NVARCHAR(MAX) para tokens Fernet)
-        col_defs = ", ".join([f"[{c}] NVARCHAR(MAX)" for c in cols])
-        cur.execute(f"CREATE TABLE [{backup}] ({col_defs})")
-
-        # 2. Insertar filas cifradas en el backup
-        for fila in datos:
-            cur.execute(
-                f"INSERT INTO [{backup}] ({cols_q}) VALUES ({ph})",
-                _cifrar_fila(fila, cols)
-            )
-
-        # 3. Enmascarar y sobrescribir tabla original
-        enmascarados = aplicar_enmascaramiento(datos, reglas)
-        cur.execute(f"DELETE FROM [{tabla}]")
-        for fila in enmascarados:
-            valores = [fila.get(c) for c in cols]
-            cur.execute(
-                f"INSERT INTO [{tabla}] ({cols_q}) VALUES ({ph})",
-                valores
-            )
-
+        cur.execute(f"EXEC sp_rename '{tabla}', '{tabla_raw}'")
+        sql_select = _sqlserver_generar_select_vista(motor, tabla_raw, reglas)
+        cur.execute(f"CREATE VIEW [{tabla}] AS {sql_select}")
         conn.commit()
-        success = True
-
     except Exception as e:
         try:
             conn.rollback()
-        except Exception:
-            pass
+        except: pass
         raise e
     finally:
-        # Deshabilitar IDENTITY_INSERT para la tabla original
-        try:
-            cur.execute(f"SET IDENTITY_INSERT [{tabla}] OFF")
-        except Exception:
-            pass
-
-        # ─ Rehabilitar FK constraints SIEMPRE (incluso si hubo excepción) ───
-        for hijo in tablas_hijo:
-            try:
-                cur.execute(f"ALTER TABLE [{hijo}] CHECK CONSTRAINT ALL")
-            except Exception:
-                pass  # No queremos enmascarar el error original
-        if success:
-            try:
-                conn.commit()
-            except Exception:
-                pass
         conn.close()
 
     _registrar_estado(connection_id, tabla, "ACTIVA")
-    return {"filas_protegidas": len(enmascarados), "backup_tabla": backup}
-
+    return {"filas_protegidas": "N/A (Vista DDM creada)", "backup_tabla": tabla_raw}
 
 def _sqlserver_restaurar(motor, tabla: str, connection_id: str) -> Dict[str, Any]:
-    backup = tabla + BACKUP_SUFFIX
-
-    res = motor.ejecutar_consulta(f"SELECT OBJECT_ID('{backup}', 'U') AS existe")
+    tabla_raw = tabla + "__raw"
+    res = motor.ejecutar_consulta(f"SELECT OBJECT_ID('{tabla_raw}', 'U') AS existe")
     if not res or res[0].get("existe") is None:
-        raise ValueError(f"Backup '{backup}' no encontrado en SQL Server.")
-
-    cifrados = motor.ejecutar_consulta(f"SELECT * FROM [{backup}]")
-    if not cifrados:
-        raise ValueError("El backup está vacío.")
-
-    cols = list(cifrados[0].keys())
-    cols_q = ", ".join([f"[{c}]" for c in cols])
-    ph    = ", ".join(["%s" for _ in cols])  # pymssql usa %s
+        raise ValueError(f"Tabla base '{tabla_raw}' no encontrada en SQL Server.")
 
     conn = motor.conectar()
     cur  = conn.cursor()
-
-    # Descubrir tablas hijo con FK hacia [tabla]
-    tablas_hijo = _sqlserver_get_fk_dependientes(cur, tabla)
-
-    # Obtener tipos de columna de la tabla original para parsear fechas
-    tipos_cols = {}
     try:
-        cur.execute("""
-            SELECT COLUMN_NAME, DATA_TYPE 
-            FROM INFORMATION_SCHEMA.COLUMNS 
-            WHERE TABLE_NAME = %s
-        """, (tabla,))
-        filas_tipos = cur.fetchall()
-        for f in filas_tipos:
-            col_name = f[0] if isinstance(f, (tuple, list)) else f.get("COLUMN_NAME")
-            col_type = f[1] if isinstance(f, (tuple, list)) else f.get("DATA_TYPE")
-            if col_name and col_type:
-                tipos_cols[col_name.lower()] = col_type.lower()
-    except Exception:
-        pass
-
-    success = False
-    try:
-        # ─ Deshabilitar FK constraints en tablas hijo ─────────────────────
-        for hijo in tablas_hijo:
-            cur.execute(f"ALTER TABLE [{hijo}] NOCHECK CONSTRAINT ALL")
-
-        # Habilitar IDENTITY_INSERT por si la tabla tiene columna IDENTITY
-        try:
-            cur.execute(f"SET IDENTITY_INSERT [{tabla}] ON")
-        except Exception:
-            pass
-
-        cur.execute(f"DELETE FROM [{tabla}]")
-        for fila in cifrados:
-            descifrada = _descifrar_fila(fila, cols)
-            valores_restaurados = []
-            for c, val in zip(cols, descifrada):
-                tipo = tipos_cols.get(c.lower(), "")
-                if val is not None and tipo in ("date", "datetime", "datetime2", "smalldatetime", "datetimeoffset"):
-                    valores_restaurados.append(_parsear_fecha_sqlserver(val, tipo))
-                else:
-                    valores_restaurados.append(val)
-
-            cur.execute(
-                f"INSERT INTO [{tabla}] ({cols_q}) VALUES ({ph})",
-                valores_restaurados
-            )
-        cur.execute(f"DROP TABLE [{backup}]")
+        cur.execute(f"DROP VIEW IF EXISTS [{tabla}]")
+        cur.execute(f"EXEC sp_rename '{tabla_raw}', '{tabla}'")
         conn.commit()
-        success = True
-
     except Exception as e:
         try:
             conn.rollback()
-        except Exception:
-            pass
+        except: pass
         raise e
     finally:
-        # Deshabilitar IDENTITY_INSERT para la tabla original
-        try:
-            cur.execute(f"SET IDENTITY_INSERT [{tabla}] OFF")
-        except Exception:
-            pass
-
-        # ─ Rehabilitar FK constraints SIEMPRE ────────────────────────
-        for hijo in tablas_hijo:
-            try:
-                cur.execute(f"ALTER TABLE [{hijo}] CHECK CONSTRAINT ALL")
-            except Exception:
-                pass
-        if success:
-            try:
-                conn.commit()
-            except Exception:
-                pass
         conn.close()
 
     _registrar_estado(connection_id, tabla, "INACTIVA")
-    return {"filas_restauradas": len(cifrados)}
+    return {"filas_restauradas": "N/A (Vista eliminada)"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -605,109 +491,73 @@ def _sqlserver_restaurar(motor, tabla: str, connection_id: str) -> Dict[str, Any
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _mongo_preflight(motor, coleccion: str) -> Tuple[Any, Any, str]:
-    """
-    Retorna (cliente_mongo, db, nombre_backup) si el preflight pasa.
-    El cliente queda ABIERTO — el caller debe cerrarlo con cliente.close().
-    """
-    backup = coleccion + BACKUP_SUFFIX
+    col_raw = coleccion + "__raw"
     cliente = motor.conectar()
     db_name = motor.credenciales.get("database")
     db = cliente[db_name]
-    if backup in db.list_collection_names():
+    if col_raw in db.list_collection_names():
         cliente.close()
         raise ValueError(
-            f"Pre-flight FAIL: La shadow collection '{backup}' ya existe en MongoDB. "
+            f"Pre-flight FAIL: La colección base '{col_raw}' ya existe en MongoDB. "
             "Ejecuta 'Restaurar' antes de volver a proteger."
         )
-    return cliente, db, backup
-
+    return cliente, db, col_raw
 
 def _mongo_proteger(motor, coleccion: str, reglas: Dict[str, str], connection_id: str) -> Dict[str, Any]:
-    cliente, db, backup = _mongo_preflight(motor, coleccion)
+    cliente, db, col_raw = _mongo_preflight(motor, coleccion)
 
     try:
-        col_orig = db[coleccion]
-        docs_originales = list(col_orig.find({}))
-        if not docs_originales:
-            raise ValueError(f"La colección '{coleccion}' está vacía.")
+        # 1. Renombrar la colección original
+        db[coleccion].rename(col_raw)
 
-        # Serializar ObjectId a string para poder manipular los documentos
-        docs_serializados = [
-            {k: (str(v) if k == "_id" else v) for k, v in doc.items()}
-            for doc in docs_originales
-        ]
+        # 2. Crear pipeline de agregación para enmascarar
+        set_stage = {}
+        for col, algoritmo in reglas.items():
+            if algoritmo == "redaccion":
+                set_stage[col] = "***"
+            elif algoritmo == "hashing":
+                # Basic masking since native SHA256 in MongoDB views requires complex JS/aggregation
+                set_stage[col] = "[HASHED]" 
+            else:
+                set_stage[col] = "[MASKED]"
 
-        # 1. Crear shadow collection con documentos COMPLETAMENTE cifrados (campo a campo)
-        docs_backup = []
-        for doc in docs_serializados:
-            doc_enc = {}
-            for k, v in doc.items():
-                if k == "_id":
-                    doc_enc[k] = v  # Preservar el ID original como string
-                elif isinstance(v, str):
-                    doc_enc[k] = cifrar_valor(v)
-                elif v is not None:
-                    doc_enc[k] = cifrar_valor(str(v))  # Serializar y cifrar no-strings
-                else:
-                    doc_enc[k] = None
-            docs_backup.append(doc_enc)
+        pipeline = []
+        if set_stage:
+            pipeline.append({"$set": set_stage})
 
-        db[backup].insert_many(copy.deepcopy(docs_backup))
-
-        # 2. Aplicar enmascaramiento con las reglas del usuario sobre los originales
-        docs_enmascarados = aplicar_enmascaramiento(docs_serializados, reglas)
-
-        # 3. Reemplazar la colección original
-        col_orig.drop()
-        db[coleccion].insert_many(copy.deepcopy(docs_enmascarados))
+        # 3. Crear vista
+        db.command({
+            "create": coleccion,
+            "viewOn": col_raw,
+            "pipeline": pipeline
+        })
 
     finally:
         cliente.close()
 
     _registrar_estado(connection_id, coleccion, "ACTIVA")
-    return {"filas_protegidas": len(docs_originales), "shadow_collection": backup}
+    return {"filas_protegidas": "N/A (Vista DDM creada)", "shadow_collection": col_raw}
 
 
 def _mongo_restaurar(motor, coleccion: str, connection_id: str) -> Dict[str, Any]:
-    backup = coleccion + BACKUP_SUFFIX
+    col_raw = coleccion + "__raw"
     cliente = motor.conectar()
 
     try:
         db_name = motor.credenciales.get("database")
         db = cliente[db_name]
 
-        if backup not in db.list_collection_names():
-            raise ValueError(f"Shadow collection '{backup}' no encontrada en MongoDB.")
-
-        docs_cifrados = list(db[backup].find({}))
-        if not docs_cifrados:
-            raise ValueError("El backup de MongoDB está vacío.")
-
-        # Descifrar todos los campos (excepto _id que es string del ObjectId original)
-        docs_restaurados = []
-        for doc in docs_cifrados:
-            doc_dec = {}
-            for k, v in doc.items():
-                if k == "_id":
-                    continue  # MongoDB generará un nuevo _id al insertar
-                if isinstance(v, str):
-                    try:
-                        doc_dec[k] = descifrar_valor(v)
-                    except Exception:
-                        doc_dec[k] = v  # Si no era Fernet, dejarlo tal cual
-                else:
-                    doc_dec[k] = v
-            docs_restaurados.append(doc_dec)
+        if col_raw not in db.list_collection_names():
+            raise ValueError(f"Colección base '{col_raw}' no encontrada en MongoDB.")
 
         db[coleccion].drop()
-        db[coleccion].insert_many(copy.deepcopy(docs_restaurados))
-        db[backup].drop()
+        db[col_raw].rename(coleccion)
 
     finally:
         cliente.close()
 
     _registrar_estado(connection_id, coleccion, "INACTIVA")
-    return {"filas_restauradas": len(docs_restaurados)}
+    return {"filas_restauradas": "N/A (Vista eliminada)"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

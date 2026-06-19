@@ -226,7 +226,7 @@ async def status(payload: Dict[str, Any] = Body(...)):
         if estado == "INACTIVA" and motor_nombre and credenciales:
             try:
                 motor = DatabaseFactory.obtener_motor(motor_nombre, credenciales)
-                backup = tabla + "__backup_enc"
+                backup = tabla + "__raw"
                 existe = False
                 
                 if motor_nombre == "sqlite":
@@ -234,6 +234,9 @@ async def status(payload: Dict[str, Any] = Body(...)):
                         f"SELECT name FROM sqlite_master WHERE type='table' AND name='{backup}'"
                     )
                     existe = len(res) > 0
+                elif motor_nombre in ["mysql", "mariadb"]:
+                    res = motor.ejecutar_consulta(f"SHOW TABLES LIKE '{backup}'")
+                    existe = res and len(res) > 0
                 elif motor_nombre == "postgres":
                     res = motor.ejecutar_consulta(f"SELECT to_regclass('public.\"{backup}\"') AS existe")
                     existe = len(res) > 0 and res[0].get("existe") is not None
