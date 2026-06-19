@@ -9,6 +9,11 @@ import sqlite3
 import redis
 import json
 from neo4j import GraphDatabase
+try:
+    from cassandra.cluster import Cluster
+    from cassandra.auth import PlainTextAuthProvider
+except ImportError:
+    Cluster = None
 
 class BaseDeDatos(ABC):
     """
@@ -298,7 +303,8 @@ class DatabaseFactory:
     def obtener_motor(motor: str, credenciales: Dict[str, Any]) -> BaseDeDatos:
         motores = {
             "postgres": PostgresDB, "mysql": MySQLDB, "sqlserver": SQLServerDB,
-            "sqlite": SQLiteDB, "mongodb": MongoDB, "redis": RedisDB, "neo4j": Neo4jDB
+            "sqlite": SQLiteDB, "mongodb": MongoDB, "redis": RedisDB, "neo4j": Neo4jDB,
+            "mariadb": MySQLDB, "cassandra": CassandraDB
         }
         clase = motores.get(motor.lower())
         if not clase: raise ValueError(f"Motor '{motor}' no soportado.")

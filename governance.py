@@ -228,8 +228,83 @@ def _sqlite_restaurar(motor, tabla: str, connection_id: str) -> Dict[str, Any]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ESTRATEGIA: PostgreSQL
+# ESTRATEGIA: MySQL / MariaDB
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _mysql_preflight(motor, tabla: str) -> str:
+    backup = tabla + BACKUP_SUFFIX
+    res = motor.ejecutar_consulta(f"SHOW TABLES LIKE '{backup}'")
+    if res:
+        raise ValueError(
+            f"Pre-flight FAIL: La tabla '{backup}' ya existe en MySQL. "
+            "Ejecuta 'Restaurar' antes de volver a proteger."
+        )
+    return backup
+
+
+def _mysql_proteger(motor, tabla: str, reglas: Dict[str, str], connection_id: str) -> Dict[str, Any]:
+    backup = _mysql_preflight(motor, tabla)
+
+    datos = motor.ejecutar_consulta(f"SELECT * FROM `{tabla}` LIMIT 50000")
+    if not datos:
+        raise ValueError(f"La tabla '{tabla}' está vacía.")
+
+    cols = list(datos[0].keys())
+    cols_q = ", ".join([f"`{c}`" for c in cols])
+    ph = ", ".join(["%s" for _ in cols])
+
+    conn = motor.conectar()
+    cur = conn.cursor()
+
+    # 1. Crear tabla de backup (todos los campos TEXT para almacenar tokens Fernet)
+    col_defs = ", ".join([f"`{c}` TEXT" for c in cols])
+    cur.execute(f"CREATE TABLE `{backup}` ({col_defs})")
+
+    # 2. Insertar filas cifradas en el backup
+    for fila in datos:
+        cur.execute(f"INSERT INTO `{backup}` ({cols_q}) VALUES ({ph})", _cifrar_fila(fila, cols))
+
+    # 3. Enmascarar y sobrescribir la tabla original
+    enmascarados = aplicar_enmascaramiento(datos, reglas)
+    cur.execute(f"DELETE FROM `{tabla}`")
+    for fila in enmascarados:
+        cur.execute(
+            f"INSERT INTO `{tabla}` ({cols_q}) VALUES ({ph})",
+            [str(fila.get(c, "")) for c in cols]
+        )
+
+    conn.commit()
+    conn.close()
+    _registrar_estado(connection_id, tabla, "ACTIVA")
+    return {"filas_protegidas": len(enmascarados), "backup_tabla": backup}
+
+
+def _mysql_restaurar(motor, tabla: str, connection_id: str) -> Dict[str, Any]:
+    backup = tabla + BACKUP_SUFFIX
+
+    res = motor.ejecutar_consulta(f"SHOW TABLES LIKE '{backup}'")
+    if not res:
+        raise ValueError(f"Backup '{backup}' no encontrado en MySQL.")
+
+    cifrados = motor.ejecutar_consulta(f"SELECT * FROM `{backup}`")
+    if not cifrados:
+        raise ValueError("El backup está vacío.")
+
+    cols = list(cifrados[0].keys())
+    cols_q = ", ".join([f"`{c}`" for c in cols])
+    ph = ", ".join(["%s" for _ in cols])
+
+    conn = motor.conectar()
+    cur = conn.cursor()
+    cur.execute(f"DELETE FROM `{tabla}`")
+    for fila in cifrados:
+        cur.execute(f"INSERT INTO `{tabla}` ({cols_q}) VALUES ({ph})", _descifrar_fila(fila, cols))
+    cur.execute(f"DROP TABLE `{backup}`")
+    conn.commit()
+    conn.close()
+
+    _registrar_estado(connection_id, tabla, "INACTIVA")
+    return {"filas_restauradas": len(cifrados)}
 
 def _postgres_preflight(motor, tabla: str) -> str:
     backup = tabla + BACKUP_SUFFIX
@@ -643,6 +718,8 @@ def _mongo_restaurar(motor, coleccion: str, connection_id: str) -> Dict[str, Any
 _ESTRATEGIAS: Dict[str, Tuple[Callable, Callable]] = {
     "sqlite":    (_sqlite_proteger,    _sqlite_restaurar),
     "postgres":  (_postgres_proteger,  _postgres_restaurar),
+    "mysql":     (_mysql_proteger,     _mysql_restaurar),
+    "mariadb":   (_mysql_proteger,     _mysql_restaurar),
     "sqlserver": (_sqlserver_proteger, _sqlserver_restaurar),
     "mongodb":   (_mongo_proteger,     _mongo_restaurar),
 }

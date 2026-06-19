@@ -16,23 +16,32 @@ KEYFILE_PATH = os.path.join(settings.DATA_DIR, ".keyfile")
 
 def _cargar_o_generar_clave() -> bytes:
     """
-    Garantiza que la clave Fernet siempre sea la misma entre reinicios.
-    Si no existe el archivo, lo crea con permisos restrictivos.
+    Garantiza que la clave Fernet sea persistente.
+    Prioridad: Variable de Entorno > Archivo Local.
     """
+    # 1. Intentar cargar desde Variable de Entorno (Recomendado para Render/Producción)
+    env_key = os.getenv("ENMASK_MASTER_KEY")
+    if env_key:
+        try:
+            return env_key.encode("utf-8")
+        except Exception:
+            pass
+
+    # 2. Intentar cargar desde archivo local
     if os.path.exists(KEYFILE_PATH):
         with open(KEYFILE_PATH, "rb") as f:
             clave = f.read().strip()
         print(f"[KEYFILE] Clave Fernet cargada desde '{KEYFILE_PATH}'.")
         return clave
     else:
+        # 3. Generar nueva clave
         clave = Fernet.generate_key()
         with open(KEYFILE_PATH, "wb") as f:
             f.write(clave)
-        # Permisos de solo lectura para el propietario en sistemas Unix/Linux
         try:
             os.chmod(KEYFILE_PATH, 0o600)
         except AttributeError:
-            pass  # Windows no soporta chmod de la misma forma, ignorar.
+            pass
         print(f"[KEYFILE] Nueva clave Fernet generada y guardada en '{KEYFILE_PATH}'.")
         return clave
 
