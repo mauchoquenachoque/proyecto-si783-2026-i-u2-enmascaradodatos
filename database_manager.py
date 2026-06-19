@@ -485,7 +485,11 @@ def transformar_columna_tabla(
             if valor_actual is None or valor_key in valores_vistos:
                 continue
             valores_vistos.add(valor_key)
-            nuevo_valor = transformador(valor_actual)
+            try:
+                valor_como_str = str(valor_actual) if not isinstance(valor_actual, str) else valor_actual
+                nuevo_valor = transformador(valor_como_str)
+            except Exception:
+                continue
             if nuevo_valor == valor_actual:
                 continue
             cursor.execute(

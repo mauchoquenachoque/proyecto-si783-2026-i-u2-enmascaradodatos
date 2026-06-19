@@ -192,20 +192,24 @@ async def mask(payload: Dict[str, Any] = Body(...)):
 
 @app.post("/encrypt")
 async def encrypt(payload: Dict[str, Any] = Body(...)):
-    motor = _build_motor(payload)
-    tabla, columna = _resolve_column_payload(payload)
-
-    filas_afectadas = transformar_columna_tabla(motor, tabla, columna, encrypt_value)
-    return {"rows_updated": filas_afectadas, "masking_mode": "encryption"}
+    try:
+        motor = _build_motor(payload)
+        tabla, columna = _resolve_column_payload(payload)
+        filas_afectadas = transformar_columna_tabla(motor, tabla, columna, encrypt_value)
+        return {"rows_updated": filas_afectadas, "masking_mode": "encryption"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al encriptar: {str(e)}")
 
 
 @app.post("/decrypt")
 async def decrypt(payload: Dict[str, Any] = Body(...)):
-    motor = _build_motor(payload)
-    tabla, columna = _resolve_column_payload(payload)
-
-    filas_afectadas = transformar_columna_tabla(motor, tabla, columna, decrypt_value)
-    return {"rows_updated": filas_afectadas, "masking_mode": "encryption"}
+    try:
+        motor = _build_motor(payload)
+        tabla, columna = _resolve_column_payload(payload)
+        filas_afectadas = transformar_columna_tabla(motor, tabla, columna, decrypt_value)
+        return {"rows_updated": filas_afectadas, "masking_mode": "encryption"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al desencriptar: {str(e)}")
 
 @app.post("/status")
 async def status(payload: Dict[str, Any] = Body(...)):

@@ -18,6 +18,9 @@ def generate_key() -> bytes:
 
 def create_key_if_missing() -> bytes:
     _ensure_data_dir()
+    env_key = os.getenv("ENMASK_MASTER_KEY")
+    if env_key:
+        return env_key.encode("utf-8")
     if os.path.exists(KEYFILE_PATH):
         with open(KEYFILE_PATH, "rb") as handler:
             return handler.read().strip()
@@ -34,6 +37,11 @@ def create_key_if_missing() -> bytes:
 
 def load_key() -> bytes:
     _ensure_data_dir()
+    env_key = os.getenv("ENMASK_MASTER_KEY")
+    if env_key:
+        key = env_key.encode("utf-8")
+        if validate_key(key):
+            return key
     if not os.path.exists(KEYFILE_PATH):
         return create_key_if_missing()
     with open(KEYFILE_PATH, "rb") as handler:
