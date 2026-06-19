@@ -298,6 +298,51 @@ class Neo4jDB(BaseDeDatos):
         finally:
             driver.close()
 
+class CassandraDB(BaseDeDatos):
+    def conectar(self):
+        if Cluster is None:
+            raise ImportError("El paquete 'cassandra-driver' no está instalado.")
+        auth_provider = None
+        if self.credenciales.get('user') and self.credenciales.get('password'):
+            auth_provider = PlainTextAuthProvider(
+                username=self.credenciales.get('user'),
+                password=self.credenciales.get('password')
+            )
+        cluster = Cluster(
+            contact_points=[self.credenciales.get('host', 'localhost')],
+            port=int(self.credenciales.get('port', 9042)),
+            auth_provider=auth_provider
+        )
+        return cluster.connect(self.credenciales.get('database'))
+
+    def obtener_esquema(self) -> Dict[str, List[str]]:
+        esquema = {}
+        session = self.conectar()
+        try:
+            from cassandra.query import SimpleStatement
+            query = "SELECT table_name, column_name FROM system_schema.columns WHERE keyspace_name = %s"
+            rows = session.execute(SimpleStatement(query), [self.credenciales.get('database')])
+            for row in rows:
+                t_name = row.table_name
+                c_name = row.column_name
+                if t_name not in esquema:
+                    esquema[t_name] = []
+                esquema[t_name].append(c_name)
+        finally:
+            session.cluster.shutdown()
+        return {"tablas": esquema}
+
+    def ejecutar_consulta(self, query_o_filtro: str, params: Any = None, **kwargs) -> List[Dict[str, Any]]:
+        session = self.conectar()
+        try:
+            from cassandra.query import SimpleStatement
+            stmt = SimpleStatement(query_o_filtro)
+            rows = session.execute(stmt, params or [])
+            return [row._asdict() for row in rows]
+        finally:
+            session.cluster.shutdown()
+
+
 class DatabaseFactory:
     @staticmethod
     def obtener_motor(motor: str, credenciales: Dict[str, Any]) -> BaseDeDatos:

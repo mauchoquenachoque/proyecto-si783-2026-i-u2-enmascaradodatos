@@ -28,7 +28,7 @@ load_dotenv()
 API_SERVICE_URL = os.getenv("API_SERVICE_URL", "http://localhost:8000")
 MASKING_SERVICE_URL = os.getenv("MASKING_SERVICE_URL", "http://localhost:8001")
 MONITOR_SERVICE_URL = os.getenv("MONITOR_SERVICE_URL", "http://localhost:8002")
-MOTORES_SDM_DISPONIBLES = ["sqlite", "postgres", "sqlserver", "mongodb"]
+MOTORES_SDM_DISPONIBLES = ["sqlite", "postgres", "sqlserver", "mongodb", "mysql", "mariadb"]
 # Render sirve HTTPS; las cookies deben marcarse secure en produccion
 _COOKIE_SECURE = os.getenv("RENDER") == "true"
 
